@@ -11,3 +11,6 @@ venv/
 .ruff_cache/
 *.jsonl
 .DS_Store
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
