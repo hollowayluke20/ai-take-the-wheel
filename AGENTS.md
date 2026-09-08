@@ -25,6 +25,16 @@ work.** No batch of changes counts as finished until it is committed and
 pushed, and if you stop mid-task, leave `IN-PROGRESS.md` at the repo root
 saying where you got to.
 
+## Agent skills
+
+### Issue tracker
+
+Local markdown under `.scratch/<feature>/`. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single-context. See `docs/agents/domain.md`.
+
 <!-- graft:start -->
 ## Graft — repo context graph
 
