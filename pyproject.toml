@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "attw"
+version = "0.0.1"
+description = "AI_TAKE_THE_WHEEL — find how problems have already been solved elsewhere, ranked by real-world evidence."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+[project.scripts]
+attw = "attw.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/attw"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
