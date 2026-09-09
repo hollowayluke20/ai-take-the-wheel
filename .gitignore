@@ -12,5 +12,8 @@ venv/
 *.jsonl
 .DS_Store
 
+# attw weekly mention cache — refreshable, not committed (ticket 09).
+database/cache/
+
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 /graft/

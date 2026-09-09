@@ -39,21 +39,32 @@ def test_cli_help_lists_all_commands(capsys):
 
 def test_working_stage_commands_exit_zero(capsys):
     assert cli.main(["understand", "an app idea"]) == 0
-    assert "Hand-rolled CSV" in capsys.readouterr().out
+    assert "addition" in capsys.readouterr().out
     assert cli.main(["find", "CSV parsing"]) == 0
     assert cli.main(["rank", "CSV parsing"]) == 0
 
 
 def test_skeleton_commands_exit_one_with_ticket_ref(capsys):
-    assert cli.main(["evidence", "tenacity"]) == 1
-    assert "05" in capsys.readouterr().out
     args = ["implement", "--component", "c", "--wheel", "w", "--sandbox-dir", "s"]
     assert cli.main(args) == 1
     assert "05" in capsys.readouterr().out
     assert cli.main(["verify", "verify.json", "--check"]) == 1
     assert "05" in capsys.readouterr().out
-    assert cli.main(["refresh-cache"]) == 1
-    assert "05" in capsys.readouterr().out
+
+
+def test_built_evidence_commands_exit_zero(monkeypatch, capsys, tmp_path):
+    # Ticket 09 built evidence.collect_evidence + refresh_weekly_cache;
+    # wire-through only (no network — bodies mocked).
+    monkeypatch.setattr(
+        evidence, "collect_evidence", lambda candidate: {"candidate": "tenacity"}
+    )
+    monkeypatch.setattr(
+        evidence, "refresh_weekly_cache", lambda *a, **k: str(tmp_path / "m.json")
+    )
+    assert cli.main(["evidence", "tenacity"]) == 0
+    assert "tenacity" in capsys.readouterr().out
+    assert cli.main(["refresh-cache"]) == 0
+    assert "m.json" in capsys.readouterr().out
 
 
 def test_stage_signatures():
@@ -61,8 +72,9 @@ def test_stage_signatures():
     assert "component" in inspect.signature(implement.plan).parameters
     assert "sandbox_dir" in inspect.signature(implement.apply).parameters
     assert "sandbox_dir" in inspect.signature(verify.run_suite).parameters
-    with pytest.raises(NotImplementedError, match="05"):
-        understand.decompose("an idea")
+    # Ticket 07 built understand.decompose: idea-text yields additions.
+    components = understand.decompose("an idea")
+    assert components and {c["kind"] for c in components} == {"addition"}
 
 
 def test_classify_input():

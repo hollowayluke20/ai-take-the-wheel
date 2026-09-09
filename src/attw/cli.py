@@ -12,11 +12,25 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
 
 from attw import evidence, find, implement, rank, report, understand, verify
-from attw.failures import make_failure
+from attw.failures import format_one, make_failure
+from attw.find import FindError
+from attw.understand import UnderstandError
+
+
+def _safe(text: object) -> str:
+    """Render text printable on narrow consoles (e.g. Windows cp1252).
+
+    GitHub descriptions may contain emoji; replace unencodable chars
+    instead of crashing the find subcommand.
+    """
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    rendered = str(text)
+    return rendered.encode(encoding, errors="replace").decode(encoding)
 
 
 def _slug(text: str) -> str:
@@ -37,12 +51,41 @@ def analyze(
     Unless dry_run, also attempts implement + verify; skeleton stages raise
     NotImplementedError, recorded as failure records (downstream-only).
     Saves the run record JSON + report.md sidecar into out_dir/database.
+    An understand-stage failure is recorded and stops everything
+    downstream-only (no find/evidence/rank output, no implement/verify).
     """
-    problems = understand.profile(source)
-    searches = {problem: find.search(problem) for problem in problems}
-    # NOTE: evidence stage has real fetchers, but nothing calls them yet —
-    # find-stage returns no candidates, so there is nothing to enrich.
+    try:
+        components = [dict(c) for c in understand.decompose(source)]
+    except UnderstandError as exc:
+        results = {
+            "input": {"kind": understand.classify_input(source), "value": source},
+            "components": [],
+            "profile": [],
+            "searches": {},
+            "problems": [],
+            "verdict": None,
+            "failures": [exc.failure],
+            "dry_run": dry_run,
+            "mode": mode,
+        }
+        return _save(results, source, out_dir)
+    problems = [c["description"] for c in components]
+    searches: dict[str, list[str]] = {}
+    candidates: dict[str, list[dict]] = {}
     failures: list[dict] = []
+    for component, problem in zip(components, problems):
+        query = find.component_to_query(component)
+        try:
+            hits = find.find_for_component(component)
+        except FindError as exc:
+            failures.append(exc.failure)
+            searches[problem] = [query]
+            candidates[problem] = []
+        else:
+            searches[problem] = [query]
+            candidates[problem] = [dict(h) for h in hits]
+    # NOTE: evidence stage has real fetchers, but nothing calls them yet —
+    # find-stage returns no ranked options, so there is nothing to enrich.
     if not dry_run:
         try:
             plan = implement.plan({"problem": problems[0] if problems else ""}, {})
@@ -55,8 +98,10 @@ def analyze(
             failures.append(make_failure("verify", "skeleton", str(exc)))
     results = {
         "input": {"kind": understand.classify_input(source), "value": source},
+        "components": components,
         "profile": problems,
         "searches": searches,
+        "candidates": candidates,
         "problems": [
             {"problem": problem, "options": rank.rank(problem)}
             for problem in problems
@@ -66,6 +111,11 @@ def analyze(
         "dry_run": dry_run,
         "mode": mode,
     }
+    return _save(results, source, out_dir)
+
+
+def _save(results: dict, source: str, out_dir: Path | None) -> str:
+    """Write the run-record JSON + report.md sidecar; return Markdown."""
     saved = Path(out_dir) if out_dir else Path("database")
     saved.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
@@ -140,13 +190,41 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
         elif args.command == "understand":
-            for problem in understand.profile(args.source):
-                print(f"- {problem}")
+            for component in understand.decompose(args.source):
+                sites = ", ".join(component["call_sites"][:5])
+                print(
+                    f"- {component['name']} [{component['kind']}, "
+                    f"confidence={component['confidence']}]"
+                )
+                print(f"  {component['description']}")
+                if sites:
+                    print(f"  call sites: {sites}")
         elif args.command == "find":
-            for hit in find.search(args.problem):
-                print(f"- {hit}")
+            try:
+                hits = find.search(args.problem)
+            except FindError as exc:
+                print(f"find failed: {format_one(exc.failure)}")
+                if exc.failure.get("detail"):
+                    print(exc.failure["detail"])
+                return 1
+            for hit in hits:
+                print(f"- {_safe(hit['full_name'])} ({hit['stars']} stars)")
+                print(f"  {_safe(hit['description'])}")
+                print(f"  {hit['url']}")
         elif args.command == "evidence":
-            print(evidence.collect_evidence({"candidate": args.candidate}))
+            candidate: dict | str = args.candidate
+            maybe_path = Path(args.candidate)
+            if maybe_path.is_file():
+                candidate = json.loads(maybe_path.read_text(encoding="utf-8"))
+            elif args.candidate.startswith(("http://", "https://")):
+                candidate = {"repo_url": args.candidate}
+            else:
+                candidate = {"candidate": args.candidate}
+            try:
+                print(json.dumps(evidence.collect_evidence(candidate), indent=2))
+            except ValueError as exc:
+                print(f"evidence failed: {exc}")
+                return 1
         elif args.command == "rank":
             for i, opt in enumerate(rank.rank(args.problem), start=1):
                 print(f"{i}. {opt['name']} — {opt['why']}")
@@ -162,6 +240,11 @@ def main(argv: list[str] | None = None) -> int:
             print(verify.check(args.verify_json))
         elif args.command == "refresh-cache":
             print(evidence.refresh_weekly_cache())
+    except UnderstandError as exc:
+        print(f"understand failed: {format_one(exc.failure)}")
+        if exc.failure.get("detail"):
+            print(exc.failure["detail"])
+        return 1
     except NotImplementedError as exc:
         print(f"not implemented yet ({exc})")
         return 1

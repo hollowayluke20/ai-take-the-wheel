@@ -93,6 +93,22 @@ Luke judges the reports sensible.
 - [Pipeline architecture](.scratch/attw-prototype/issues/05-architecture.md):
   layout + CLI + run-record + report + failure schema decided and skeleted in
   code; 1 critic reject fixed; verifier `verified`. Map fully worked.
+
+## Build wave (graduated 2026-09-09, Luke said build, PAT stored)
+
+Linear gauntlet per stage, each blocked by the last: 07 understand → 08 find
+→ 09 evidence → 10 rank → 11 report → 12 implement → 13 verify + end-to-end.
+PAT live (5000/hr confirmed) in gitignored `.env`; builders load it, never
+print/commit it.
+- [07 understand](.scratch/attw-prototype/issues/07-build-understand.md):
+  decompose() real for both kinds, exact failures, no API calls; critic PASS,
+  verifier `verified` (40 passed).
+- [08 find](.scratch/attw-prototype/issues/08-build-find.md): one query per
+  component, token safe, politeness + quota paths; critic PASS, verifier
+  `verified` (58 passed, live auth works).
+- [09 evidence](.scratch/attw-prototype/issues/09-build-evidence.md): all
+  signals real, weekly cache exact, null+reason failures; critic PASS,
+  verifier `verified` (73 passed, 22 live sourced cells).
 - **Pre-build rulings (Luke, 2026-09-09)**: suite spread approved, wackier
   targets allowed at same 6/2/2 shape; PAT pending (Luke mints it;
   unauth/cached until then); CVE marks down never vetoes; license mismatch =
