@@ -214,6 +214,93 @@ def test_missing_cells_shrink_denominator_confidence_display_only():
     assert entry["confidence"] == 0.0909  # round(1/11, 4)
 
 
+# AI-humaniser demo case (ticket 15): 0 stars, no license, not on PyPI
+# (no downloads_last_month / release_date cells), zeros elsewhere.
+HUMANISER_DEMO = _cand(
+    "ai-humaniser-demo",
+    license_warning="No license detected.",
+    stars=0,
+    forks=0,
+    so_count=0,
+    hn_count=0,
+    heuristics={flag: False for flag in rank.DOC_FLAGS},
+    awesome_hits={"count": 0, "lists": []},
+)
+# All norms present-but-zero or missing -> P0/P1/P2 = 0, score 0.0.
+
+
+def test_floor_declines_weak_addition():
+    # Score leg: 3 positive signals but score 1.6667 < floor 2.0.
+    stale = _cand(
+        "stale-lib",
+        last_commit_date=_iso(900),  # fresh 1/(1+5) = 0.1667
+        release_date=_iso(900),  # release 0.1667
+        open_issues=500,  # issues 1/(1+5) = 0.1667
+    )
+    result = rank.rank_candidates([stale], now=NOW)
+    assert result["ranking"][0]["score"] == 1.6667
+    assert result["verdict"]["decision"] == "decline-weak"
+    assert result["verdict"]["winner"] is None
+    # Signal leg: score 10.0 but a single positive signal.
+    lone = _cand("lone-star", stars=10)
+    result2 = rank.rank_candidates([lone], now=NOW)
+    assert result2["ranking"][0]["score"] == 10.0
+    assert result2["verdict"]["decision"] == "decline-weak"
+    assert result2["verdict"]["winner"] is None
+
+
+def test_floor_near_floor_passes():
+    # Boundary: score exactly 2.0 with 3 positive signals -> recommend.
+    edge = _cand(
+        "edge-lib",
+        last_commit_date=_iso(720),  # fresh 1/(1+4) = 0.2
+        release_date=_iso(720),  # release 0.2
+        open_issues=400,  # issues 1/(1+4) = 0.2
+    )
+    result = rank.rank_candidates([edge], now=NOW)
+    assert result["ranking"][0]["score"] == 2.0
+    assert result["verdict"]["decision"] == "recommend"
+    assert result["verdict"]["winner"] == "edge-lib"
+    # Just above with the minimum 2 positive signals -> recommend.
+    slim = _cand(
+        "slim-lib",
+        last_commit_date=_iso(540),  # fresh 0.25
+        release_date=_iso(540),  # release 0.25
+    )
+    result2 = rank.rank_candidates([slim], now=NOW)
+    assert result2["ranking"][0]["score"] == 2.5
+    assert result2["verdict"]["decision"] == "recommend"
+    assert result2["verdict"]["winner"] == "slim-lib"
+
+
+def test_floor_declines_demo_case():
+    result = rank.rank_candidates([HUMANISER_DEMO], now=NOW)
+    assert result["ranking"][0]["score"] == 0.0
+    assert result["verdict"]["decision"] == "decline-weak"
+    assert result["verdict"]["winner"] is None
+    # License warning is carried through; it never rescues the score.
+    assert result["ranking"][0]["license_warning"] == "No license detected."
+
+
+def test_floor_skipped_with_incumbent():
+    # Below-floor challenger still recommends when it beats the incumbent:
+    # the floor applies to additions (no incumbent) only.
+    weak_challenger = _cand(
+        "stale-but-better",
+        last_commit_date=_iso(900),
+        release_date=_iso(900),
+        open_issues=500,
+    )
+    legacy = _cand("legacy-lib")  # no cells at all -> score 0.0
+    result = rank.rank_candidates([weak_challenger], incumbent=legacy, now=NOW)
+    assert result["verdict"]["decision"] == "recommend"
+    assert result["verdict"]["winner"] == "stale-but-better"
+    # Strong incumbent over a weak challenger stays keep, never decline-weak.
+    result2 = rank.rank_candidates([weak_challenger], incumbent=ALPHA, now=NOW)
+    assert result2["verdict"]["decision"] == "keep"
+    assert result2["verdict"]["winner"] is None
+
+
 def test_rank_subcommand_reads_candidates_json(tmp_path, capsys):
     import json
 

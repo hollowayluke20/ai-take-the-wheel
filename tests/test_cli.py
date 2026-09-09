@@ -71,10 +71,12 @@ def test_analyze_idea_text_full_run_skips_verify_cleanly(
     assert len(saved) == 1
     record = json.loads(saved[0].read_text(encoding="utf-8"))
     stages = {f["stage"] for f in record["failures"]}
-    # implement records the idea-text skip; verify is downstream-skipped
-    # cleanly (no verify failure).
-    assert stages == {"implement"}
-    assert record["failures"][0]["code"] == "not_applicable"
+    # ticket 15: empty-cells winner declines-weak; decline skips
+    # implement/verify cleanly (no implement failure, no verify failure).
+    assert stages == set()
+    assert record["failures"] == []
+    assert record["problems"][0]["verdict"]["decision"] == "decline-weak"
+    assert "implement" not in record["problems"][0]
 
 
 def test_analyze_find_failure_declines_cleanly(tmp_path, monkeypatch):
@@ -127,8 +129,8 @@ def test_analyze_repo_url_incumbent_tie_declines_before_implement(
 
 
 def test_analyze_idea_text_has_no_incumbent(tmp_path, monkeypatch, capsys):
-    """Idea-text runs never build incumbent evidence: a lone candidate
-    still recommends (existing chain shape unchanged)."""
+    """Idea-text runs never build incumbent evidence: empty-cells lone
+    candidate declines-weak per ticket 15."""
     from attw.cli import main
 
     _mock_stages(monkeypatch)
@@ -137,5 +139,5 @@ def test_analyze_idea_text_has_no_incumbent(tmp_path, monkeypatch, capsys):
     saved = list((tmp_path / "database").glob("*.json"))
     record = json.loads(saved[0].read_text(encoding="utf-8"))
     verdict = record["problems"][0]["verdict"]
-    assert verdict["decision"] == "recommend"
-    assert verdict["winner"] == "tenacity"
+    assert verdict["decision"] == "decline-weak"
+    assert verdict["winner"] is None
