@@ -1,6 +1,16 @@
 # 11 — Build: report stage
 
-Status: open
+Status: resolved
+
+## Answer
+
+Renderer real: cited wheel×criteria table, verdict with add/substitute verbs
++ license prose + node-id gains + dissent, keep-yours justification-only,
+failure sections, run JSON + .report.md sidecar, dry-run path. Uncited-claim
+enforcement real (raises + degraded-report path, exit 1, no silent pass).
+Critic PASS; verifier `verified` (98 passed, live CLI exercise incl.
+uncited-winner rejection). Note: `database/` (run records) not gitignored —
+flagged for Luke; sidecars cleaned by verifier.
 Type: task
 Blocked by: 10
 

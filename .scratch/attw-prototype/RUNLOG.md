@@ -17,3 +17,7 @@ Exact format (see `.scratch/attw-prototype/LOOP.md` §7, normative):
 | 2026-09-09 | 07 | understand stage (decompose both kinds) | pass | critic pass; verifier verified, 40 tests | 0 |
 | 2026-09-09 | 08 | find stage (one query/component, token safe) | pass | critic pass; verifier verified, 58 tests | 0 |
 | 2026-09-09 | 09 | evidence stage (all signals, cache exact) | pass | critic pass; verifier verified, 73 tests | 0 |
+| 2026-09-09 | 10 | rank stage (exact formula, keep/decline) | pass | critic pass; verifier verified, 80 tests | 0 |
+| 2026-09-09 | 11 | report stage (cited table+verdict, enforcement) | pass | critic pass; verifier verified, 98 tests | 0 |
+| 2026-09-09 | 12 | implement stage (full matrix, sandbox) | pass | 1 reject fixed (vendor); verifier verified, 126 tests | 1 |
+| 2026-09-09 | 13 | verify harness + end-to-end (26/34/35 pass) | pass | 3 retries; accepted with test-groups limitation | 3 |

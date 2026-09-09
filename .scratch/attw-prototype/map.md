@@ -109,6 +109,19 @@ print/commit it.
 - [09 evidence](.scratch/attw-prototype/issues/09-build-evidence.md): all
   signals real, weekly cache exact, null+reason failures; critic PASS,
   verifier `verified` (73 passed, 22 live sourced cells).
+- [10 rank](.scratch/attw-prototype/issues/10-build-rank.md): exact formula,
+  CVE capped never vetoes, license unscored, keep/decline real; critic PASS,
+  verifier `verified` (80 passed).
+- [11 report](.scratch/attw-prototype/issues/11-build-report.md): cited
+  table + verdict, uncited-claim enforcement real, sidecars; critic PASS,
+  verifier `verified` (98 passed).
+- [12 implement](.scratch/attw-prototype/issues/12-build-implement.md):
+  full matrix real incl. vendor application, airtight sandbox, exact
+  failures with revert; 1 reject fixed; verifier `verified` (126 passed).
+- [13 verify + end-to-end](.scratch/attw-prototype/issues/13-build-verify.md):
+  harness real, pipeline wired end-to-end, live proof 26/34/35 PASS;
+  accepted with known limitation (test-group deps, e.g. freezegun, not
+  installed in sandbox — follow-up lane task). MAP COMPLETE.
 - **Pre-build rulings (Luke, 2026-09-09)**: suite spread approved, wackier
   targets allowed at same 6/2/2 shape; PAT pending (Luke mints it;
   unauth/cached until then); CVE marks down never vetoes; license mismatch =

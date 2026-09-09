@@ -77,10 +77,17 @@ def test_load_github_token_parses_dotenv(tmp_path, monkeypatch, capsys):
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     (tmp_path / ".env").write_text(
         '# comment\nOTHER=1\nGITHUB_TOKEN="tok-abc-123"\n', encoding="utf-8")
-    assert github_search.load_github_token() == "tok-abc-123"
-    import os
-    assert os.environ["GITHUB_TOKEN"] == "tok-abc-123"
-    assert capsys.readouterr().out == ""  # never printed
+    try:
+        assert github_search.load_github_token() == "tok-abc-123"
+        import os
+        assert os.environ["GITHUB_TOKEN"] == "tok-abc-123"
+        assert capsys.readouterr().out == ""  # never printed
+    finally:
+        # load_github_token setdefault()s into the real environ, which
+        # monkeypatch does not track — pop it so later live-network tests
+        # keep the real PAT (teardown then restores the pre-test state).
+        import os
+        os.environ.pop("GITHUB_TOKEN", None)
 
 
 def test_load_github_token_missing_file_returns_none(tmp_path, monkeypatch):
@@ -97,7 +104,12 @@ def test_load_github_token_repo_root_fallback(tmp_path, monkeypatch):
     fallback = tmp_path / "fallback.env"
     fallback.write_text("GITHUB_TOKEN=fallback-token\n", encoding="utf-8")
     monkeypatch.setattr(github_search, "_REPO_ROOT_DOTENV", fallback)
-    assert github_search.load_github_token() == "fallback-token"
+    try:
+        assert github_search.load_github_token() == "fallback-token"
+    finally:
+        # Same setdefault leak as above — pop it (see parses_dotenv).
+        import os
+        os.environ.pop("GITHUB_TOKEN", None)
 
 
 def test_load_github_token_env_wins(monkeypatch):

@@ -44,12 +44,17 @@ def test_working_stage_commands_exit_zero(capsys):
     assert cli.main(["rank", "CSV parsing"]) == 0
 
 
-def test_skeleton_commands_exit_one_with_ticket_ref(capsys):
-    args = ["implement", "--component", "c", "--wheel", "w", "--sandbox-dir", "s"]
+def test_implement_wires_and_verify_skeleton(tmp_path, capsys):
+    # Ticket 12 built implement.plan/apply: missing sandbox -> receipt
+    # failure (exit 1, exact failure string), not a skeleton stub.
+    args = ["implement", "--component", "c", "--wheel", "w",
+            "--sandbox-dir", str(tmp_path / "missing")]
     assert cli.main(args) == 1
-    assert "05" in capsys.readouterr().out
+    assert "implement: failed-install" in capsys.readouterr().out
+    # Verify harness body landed with ticket 13: missing file -> gate
+    # failure message + exit 1 (no "05 skeleton" stub any more).
     assert cli.main(["verify", "verify.json", "--check"]) == 1
-    assert "05" in capsys.readouterr().out
+    assert "verify failed" in capsys.readouterr().out
 
 
 def test_built_evidence_commands_exit_zero(monkeypatch, capsys, tmp_path):
@@ -159,6 +164,22 @@ def test_choose_manifest_and_adapter_path():
 
 
 def test_analyze_dry_run_record(tmp_path, monkeypatch, capsys):
+    from attw import evidence, find
+
+    monkeypatch.setattr(
+        find, "find_for_component",
+        lambda component, limit=10: [{
+            "name": "tenacity", "full_name": "j/tenacity",
+            "url": "https://github.com/j/tenacity",
+            "description": "retry", "stars": 1, "query": "q",
+        }],
+    )
+    monkeypatch.setattr(
+        evidence, "collect_evidence",
+        lambda candidate: {"candidate": "tenacity", "repo_url": None,
+                           "fetched_at": "t", "cells": {}, "failures": [],
+                           "license_warning": None},
+    )
     monkeypatch.chdir(tmp_path)
     assert cli.main(["analyze", "--dry-run", "an app that parses CSV"]) == 0
     assert "# AI_TAKE_THE_WHEEL report" in capsys.readouterr().out
@@ -171,12 +192,30 @@ def test_analyze_dry_run_record(tmp_path, monkeypatch, capsys):
 
 
 def test_analyze_full_records_skeleton_failures(tmp_path, monkeypatch):
+    # Ticket 13 wired the real chain: an idea-text full run records the
+    # implement skip (no target repo) and skips verify cleanly.
+    from attw import evidence, find
+
+    monkeypatch.setattr(
+        find, "find_for_component",
+        lambda component, limit=10: [{
+            "name": "tenacity", "full_name": "j/tenacity",
+            "url": "https://github.com/j/tenacity",
+            "description": "retry", "stars": 1, "query": "q",
+        }],
+    )
+    monkeypatch.setattr(
+        evidence, "collect_evidence",
+        lambda candidate: {"candidate": "tenacity", "repo_url": None,
+                           "fetched_at": "t", "cells": {}, "failures": [],
+                           "license_warning": None},
+    )
     monkeypatch.chdir(tmp_path)
     assert cli.main(["analyze", "an app that parses CSV"]) == 0
     saved = list((tmp_path / "database").glob("*.json"))
     record = json.loads(saved[0].read_text(encoding="utf-8"))
     stages = {f["stage"] for f in record["failures"]}
-    assert {"implement", "verify"} <= stages
+    assert stages == {"implement"}
 
 
 def test_report_renders_verdict_and_failures():

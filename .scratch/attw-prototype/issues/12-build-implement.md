@@ -1,6 +1,17 @@
 # 12 — Build: implement stage
 
-Status: open
+Status: resolved
+
+## Answer
+
+Applier real across the matrix (dep-swap/vendor/adapter, manifest order,
+pins, outright deletion with diff+paths+snapshot, delegation-only adapters
+no LOC cap, in-sandbox ruff tidy, advisory typecheck). Sandbox airtight
+(mkdtemp, prefix asserts, read-only original, mocked venv/installs, no
+push). Exact failure strings with revert; 2 fallbacks; GPL dep-swap-or-skip.
+1 critic reject (vendor planned-not-applied) → fixed with applied-tree
+tests → re-critic PASS; verifier `verified` (126 passed, live sandbox trial
+original untouched).
 Type: task
 Blocked by: 11
 

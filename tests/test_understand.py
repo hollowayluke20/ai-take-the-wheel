@@ -171,6 +171,16 @@ def test_understand_subcommand_failure_exits_one(tmp_path, monkeypatch, capsys):
 
 
 def test_analyze_dry_run_records_components(tmp_path, monkeypatch, capsys):
+    # Ticket 13 chain calls find/evidence live; mock them so this stays a
+    # hermetic decompose-shape test (no network).
+    from attw import evidence, find
+
+    monkeypatch.setattr(find, "find_for_component", lambda component, limit=10: [])
+    monkeypatch.setattr(
+        evidence, "collect_evidence",
+        lambda candidate: {"candidate": "x", "cells": {}, "failures": [],
+                           "license_warning": None},
+    )
     monkeypatch.chdir(tmp_path)
     assert cli.main(["analyze", "--dry-run", "fetch pages with retries"]) == 0
     assert "# AI_TAKE_THE_WHEEL report" in capsys.readouterr().out

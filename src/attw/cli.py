@@ -2,9 +2,12 @@
 
 Architecture (ticket 05): analyze runs the full pipeline with --dry-run
 (report without implement), --mode addition-only/substitution-only/auto,
---sandbox-dir and --out-dir. Per-stage subcommands exist for debugging;
-stages that need network or a sandbox (evidence/implement/verify bodies,
-cache refresh) raise NotImplementedError until their build tickets.
+--sandbox-dir and --out-dir. Per-stage subcommands exist for debugging.
+Ticket 13 wired analyze to the real stages per component: decompose ->
+find (one query/component) -> evidence (cells) -> rank (winner or
+keep-decline) -> implement (temp-clone target, apply) -> verify
+(build_verify/write_verify_json); keep-decline and dry-run skip
+implement/verify cleanly.
 """
 
 from __future__ import annotations
@@ -12,7 +15,10 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -38,6 +44,90 @@ def _slug(text: str) -> str:
     return slug or "analysis"
 
 
+#: Find hits enriched with evidence per component (ticket 13 chain).
+_FIND_LIMIT = 5
+
+#: `git clone` timeout (s) for the sandbox target copy.
+_CLONE_TIMEOUT_S = 120
+
+
+def _clone_target(url: str, *, parent: str | None = None) -> str:
+    """Clone a repo_url target into a fresh ``attw-`` sandbox dir.
+
+    ``git clone --depth 1`` into an empty temp dir (05 D3: system temp
+    default, ``--sandbox-dir`` override as parent); the original is never
+    written, only read. Raises RuntimeError on clone failure.
+    """
+    sandbox = tempfile.mkdtemp(prefix="attw-", dir=parent)
+    proc = subprocess.run(
+        ["git", "clone", "--depth", "1", url, sandbox],
+        capture_output=True,
+        text=True,
+        timeout=_CLONE_TIMEOUT_S,
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()[-2000:]
+        shutil.rmtree(sandbox, ignore_errors=True)
+        raise RuntimeError(detail or f"git clone failed for {url}")
+    return sandbox
+
+
+def _reap(*paths: str | None) -> None:
+    for path in paths:
+        if path:
+            shutil.rmtree(str(path), ignore_errors=True)
+
+
+def _cell_value(cells: dict, key: str):
+    cell = cells.get(key)
+    if isinstance(cell, dict):
+        return cell.get("value")
+    return cell
+
+
+def _build_verify_from_sandbox(sandbox: str, test_command: str) -> dict:
+    """Assemble verify.json from the harness captures implement left behind.
+
+    implement.apply captures baseline + after via verify.run_suite into
+    ``<sandbox>/verify/{baseline,after}.json``; this parses both, attaches
+    the fingerprint + heartbeat, runs the ordered gate, and returns the
+    verify.json dict. Raises VerifyError when reports are missing (e.g.
+    reaped by a revert) or unparseable.
+    """
+    base = Path(sandbox) / "verify"
+    try:
+        baseline = verify.parse_report(base / "baseline.json")
+    except verify.VerifyError as exc:
+        raise verify.VerifyError(
+            f"baseline report missing after implement: {exc}",
+            code="not_applicable",
+        ) from exc
+    try:
+        after = verify.parse_report(base / "after.json")
+    except verify.VerifyError as exc:
+        raise verify.VerifyError(
+            f"after report missing after implement: {exc}",
+            code="not_applicable",
+        ) from exc
+    baseline["path"] = str(base / "baseline.json")
+    after["path"] = str(base / "after.json")
+    heartbeat = {
+        "present": (base / "heartbeat.jsonl").is_file(),
+        "stalled": verify.is_stalled(sandbox)["stalled"],
+        "reason": verify.is_stalled(sandbox)["reason"],
+    }
+    return verify.build_verify(
+        fingerprint=verify.fingerprint(sandbox, test_command),
+        baseline=baseline,
+        after=after,
+        authored_paths=(),
+        benchmark=None,
+        mode="red_to_green",
+        sandbox_dir=sandbox,
+        heartbeat=heartbeat,
+    )
+
+
 def analyze(
     source: str,
     out_dir: Path | None = None,
@@ -46,11 +136,18 @@ def analyze(
     mode: str = "auto",
     sandbox_dir: str | None = None,
 ) -> str:
-    """Run understand -> find -> evidence -> rank -> report. Return Markdown.
+    """Run understand -> find -> evidence -> rank -> implement -> verify.
 
-    Unless dry_run, also attempts implement + verify; skeleton stages raise
-    NotImplementedError, recorded as failure records (downstream-only).
-    Saves the run record JSON + report.md sidecar into out_dir/database.
+    Per component: decompose -> find (one query/component) -> evidence
+    (cells per hit) -> rank (winner or keep-decline) -> if winner and not
+    dry_run: temp-clone the target to a sandbox, implement apply, harness
+    after-capture, build_verify/write_verify_json -> report renders the
+    cited table + verdict with the verify block. A keep verdict skips
+    implement/verify cleanly (no failure); --dry-run stops after report.
+    Every stage failure is an exact failure record, downstream-only, and
+    the loop continues to the next component. Saves the run record JSON +
+    report.md sidecar into out_dir/database, plus per-component
+    ``<stem>.verify/<component>/verify.json`` (+ baseline/after copies).
     An understand-stage failure is recorded and stops everything
     downstream-only (no find/evidence/rank output, no implement/verify).
     """
@@ -62,60 +159,345 @@ def analyze(
             "components": [],
             "profile": [],
             "searches": {},
+            "candidates": {},
             "problems": [],
+            "verify": {},
             "verdict": None,
             "failures": [exc.failure],
             "dry_run": dry_run,
             "mode": mode,
         }
-        return _save(results, source, out_dir)
-    problems = [c["description"] for c in components]
+        markdown, _stem = _save(results, source, out_dir)
+        return markdown
+    kind = understand.classify_input(source)
+    test_command = "pytest -q"
     searches: dict[str, list[str]] = {}
     candidates: dict[str, list[dict]] = {}
     failures: list[dict] = []
-    for component, problem in zip(components, problems):
-        query = find.component_to_query(component)
+    # Incumbent evidence (repo_url only): the target repo itself, pooled
+    # with challengers so rank can keep-decline before implement.
+    incumbent: dict | None = None
+    if kind == "repo_url":
         try:
-            hits = find.find_for_component(component)
+            incumbent = evidence.collect_evidence(
+                {"repo_url": source.strip()}
+            )
+        except ValueError as exc:
+            failures.append(
+                make_failure(
+                    "evidence", "not_applicable",
+                    f"incumbent evidence skipped: {exc}",
+                )
+            )
+            incumbent = None
+        except Exception as exc:  # noqa: BLE001 — no incumbent, rank as before
+            failures.append(
+                make_failure(
+                    "evidence", "source_down",
+                    f"incumbent evidence failed for {source.strip()}: "
+                    f"{type(exc).__name__}: {exc}",
+                )
+            )
+            incumbent = None
+        else:
+            failures.extend(incumbent.get("failures", []))
+    blocks: list[dict] = []
+    verify_stage: dict[str, tuple] = {}  # component slug -> (verify_data, base, after)
+    for component in components:
+        problem = component["description"]
+        cname = component.get("name", "")
+        ckind = component.get("kind", "unknown")
+        query = find.component_to_query(component)
+        searches[problem] = [query]
+        try:
+            hits = find.find_for_component(component, limit=_FIND_LIMIT)
         except FindError as exc:
             failures.append(exc.failure)
-            searches[problem] = [query]
             candidates[problem] = []
-        else:
-            searches[problem] = [query]
-            candidates[problem] = [dict(h) for h in hits]
-    # NOTE: evidence stage has real fetchers, but nothing calls them yet —
-    # find-stage returns no ranked options, so there is nothing to enrich.
-    if not dry_run:
+            ranked = rank.rank_candidates([])
+            blocks.append(
+                {
+                    "problem": problem,
+                    "kind": ckind,
+                    "ranking": ranked["ranking"],
+                    "candidates": [],
+                    "verdict": ranked["verdict"],
+                }
+            )
+            continue
+        candidates[problem] = [dict(h) for h in hits]
+        evidences: list[dict] = []
+        for hit in hits:
+            try:
+                collected = evidence.collect_evidence(dict(hit))
+            except ValueError as exc:
+                failures.append(
+                    make_failure(
+                        "evidence", "not_applicable",
+                        f"evidence skipped {hit.get('full_name', '?')}: {exc}",
+                        component=cname,
+                    )
+                )
+                continue
+            except Exception as exc:  # noqa: BLE001 — chain records, loop moves on
+                failures.append(
+                    make_failure(
+                        "evidence", "source_down",
+                        f"evidence failed for {hit.get('full_name', '?')}: "
+                        f"{type(exc).__name__}: {exc}",
+                        component=cname,
+                    )
+                )
+                continue
+            failures.extend(collected.get("failures", []))
+            evidences.append(collected)
         try:
-            plan = implement.plan({"problem": problems[0] if problems else ""}, {})
-            implement.apply(plan, sandbox_dir or "attw-sandbox")
-        except NotImplementedError as exc:
-            failures.append(make_failure("implement", "skeleton", str(exc)))
+            ranked = rank.rank_candidates(evidences, incumbent=incumbent)
+        except Exception as exc:  # noqa: BLE001 — pure logic; guard anyway
+            failures.append(
+                make_failure(
+                    "rank", "not_applicable",
+                    f"rank failed for {cname!r}: {exc}",
+                    component=cname,
+                )
+            )
+            blocks.append(
+                {
+                    "problem": problem,
+                    "kind": ckind,
+                    "ranking": [],
+                    "candidates": evidences,
+                    "verdict": None,
+                }
+            )
+            continue
+        verdict = ranked["verdict"]
+        block: dict = {
+            "problem": problem,
+            "kind": ckind,
+            "ranking": ranked["ranking"],
+            "candidates": evidences,
+            "verdict": verdict,
+        }
+        blocks.append(block)
+        if dry_run:
+            continue
+        if verdict.get("decision") == "keep" or not verdict.get("winner"):
+            continue  # keep-decline: skip implement/verify cleanly (no failure)
+        if kind != "repo_url":
+            failures.append(
+                make_failure(
+                    "implement", "not_applicable",
+                    "idea-text input has no target repo to integrate into; "
+                    "implement skipped.",
+                    component=cname,
+                )
+            )
+            continue
         try:
-            verify.run_suite(sandbox_dir or "attw-sandbox")
-        except NotImplementedError as exc:
-            failures.append(make_failure("verify", "skeleton", str(exc)))
+            sandbox = _clone_target(source.strip(), parent=sandbox_dir)
+        except Exception as exc:  # noqa: BLE001 — clone/git failure
+            failures.append(
+                make_failure(
+                    "implement", "source_down",
+                    f"Cannot clone {source} into a sandbox: {exc}",
+                    component=cname,
+                )
+            )
+            continue
+        # Suite target from the sandbox (tests/ etc.): a bare `pytest -q`
+        # lets the collector wander into docs/images dirs.
+        test_command = implement._detect_test_command(sandbox)
+        try:
+            winner_name = verdict["winner"]
+            winner_ev = next(
+                (e for e in evidences if e.get("candidate") == winner_name),
+                None,
+            )
+            cells = (winner_ev or {}).get("cells", {})
+            winner = {
+                "wheel": winner_name,
+                "name": winner_name,
+                "version_low": _cell_value(cells, "pypi_version"),
+                "license": _cell_value(cells, "license_spdx") or "",
+                "pypi_url": f"https://pypi.org/project/{winner_name}/",
+                "fallbacks": [e["name"] for e in ranked["ranking"][1:3]],
+            }
+            plan = implement.plan(component, winner, mode)
+            receipt = implement.apply(plan, sandbox, test_command)
+        except Exception as exc:  # noqa: BLE001 — plan/apply crash
+            failures.append(
+                make_failure(
+                    "implement", "failed-install",
+                    f"implement failed for {cname!r}: "
+                    f"{type(exc).__name__}: {exc}",
+                    component=cname,
+                )
+            )
+            _reap(sandbox)
+            continue
+        block["implement"] = receipt
+        if isinstance(receipt, dict) and receipt.get("failure"):
+            failures.append(receipt["failure"])
+        try:
+            verify_data = _build_verify_from_sandbox(sandbox, test_command)
+        except verify.VerifyError as exc:
+            failures.append(exc.failure)
+            _reap(sandbox, (receipt or {}).get("snapshot"))
+            continue
+        except Exception as exc:  # noqa: BLE001 — chain records, loop moves on
+            failures.append(
+                make_failure(
+                    "verify", "not_applicable",
+                    f"verify failed for {cname!r}: "
+                    f"{type(exc).__name__}: {exc}",
+                    component=cname,
+                )
+            )
+            _reap(sandbox, (receipt or {}).get("snapshot"))
+            continue
+        block["verify"] = verify_data
+        try:
+            base_text = (Path(sandbox) / "verify" / "baseline.json").read_text(
+                encoding="utf-8"
+            )
+        except OSError:
+            base_text = ""
+        try:
+            after_text = (Path(sandbox) / "verify" / "after.json").read_text(
+                encoding="utf-8"
+            )
+        except OSError:
+            after_text = ""
+        verify_stage[_slug(cname or problem)] = (verify_data, base_text, after_text)
+        gate = verify_data.get("verdict")
+        if gate == "better":
+            diff = verify_data.get("diff", {})
+            outcomes = ((verify_data.get("after") or {}).get("outcomes")) or {}
+            gains = list(diff.get("fixed", []))
+            gains += [n for n in diff.get("new", []) if outcomes.get(n) == "passed"]
+            if gains:
+                block["gain_tests"] = sorted(set(gains))
+        elif gate in ("fail", "stalled"):
+            reasons = "; ".join((verify_data.get("gate") or {}).get("reasons", []))
+            failures.append(
+                make_failure(
+                    "verify",
+                    "regression" if gate == "fail" else "stalled",
+                    f"gate {gate} for {cname!r}: {reasons}"[:2000],
+                    component=cname,
+                )
+            )
+        _reap(sandbox, (receipt or {}).get("snapshot"))
+    gates = [
+        b["verify"]["verdict"] for b in blocks if isinstance(b.get("verify"), dict)
+    ]
+    keeps = sum(
+        1 for b in blocks
+        if isinstance(b.get("verdict"), dict) and b["verdict"].get("decision") == "keep"
+    ) + sum(1 for g in gates if g == "keep-yours")
+    impl_failed = any(
+        isinstance(b.get("implement"), dict) and not b["implement"].get("ok")
+        for b in blocks
+    )
+    problems = [c["description"] for c in components]
+    if dry_run:
+        overall = None
+    elif "fail" in gates or "stalled" in gates or impl_failed:
+        overall = f"fail: {problems[0] if problems else source} did not verify clean"
+    elif "better" in gates:
+        winners = [
+            b["verdict"]["winner"] for b in blocks
+            if isinstance(b.get("verify"), dict)
+            and b["verify"].get("verdict") == "better"
+            and isinstance(b.get("verdict"), dict) and b["verdict"].get("winner")
+        ]
+        overall = f"better: {', '.join(winners) or 'gains proven (verify block)'}"
+    elif keeps:
+        overall = "keep-yours: no challenger wins; decline"
+    elif failures:
+        signal = next(
+            (f for f in failures
+             if f.get("stage") in ("understand", "find", "rank",
+                                   "implement", "verify")),
+            failures[0],
+        )
+        overall = f"fail: {signal.get('reason', 'stage failures')}"[:500]
+    else:
+        overall = None
+    merged: dict = {}
+    if verify_stage:
+        fixed: set[str] = set()
+        regressed: set[str] = set()
+        new: set[str] = set()
+        removed: list[dict] = []
+        outcomes: dict[str, str] = {}
+        order = {"fail": 0, "stalled": 1, "better": 2, "keep-yours": 3}
+        best = None
+        for _slug_key, (vdata, _b, _a) in verify_stage.items():
+            diff = vdata.get("diff", {})
+            fixed |= set(diff.get("fixed", []))
+            regressed |= set(diff.get("regressed", []))
+            new |= set(diff.get("new", []))
+            removed += list(diff.get("removed", []))
+            outcomes.update((vdata.get("after") or {}).get("outcomes") or {})
+            verdict = vdata.get("verdict")
+            if best is None or order.get(verdict, 9) < order.get(best, 9):
+                best = verdict
+        merged = {
+            "test_command": test_command,
+            "verdict": best,
+            "diff": {
+                "fixed": sorted(fixed),
+                "regressed": sorted(regressed),
+                "new": sorted(new),
+                "removed": removed,
+            },
+            "outcomes": outcomes,
+        }
     results = {
-        "input": {"kind": understand.classify_input(source), "value": source},
+        "input": {"kind": kind, "value": source},
         "components": components,
         "profile": problems,
         "searches": searches,
         "candidates": candidates,
-        "problems": [
-            {"problem": problem, "options": rank.rank(problem)}
-            for problem in problems
-        ],
-        "verdict": None,
+        "problems": blocks,
+        "verify": merged,
+        "verdict": overall,
         "failures": failures,
         "dry_run": dry_run,
         "mode": mode,
     }
-    return _save(results, source, out_dir)
+    markdown, stem = _save(results, source, out_dir)
+    if verify_stage:
+        saved = Path(out_dir) if out_dir else Path("database")
+        for slug_key, (vdata, base_text, after_text) in verify_stage.items():
+            dest = saved / f"{stem}.verify" / slug_key
+            dest.mkdir(parents=True, exist_ok=True)
+            verify.write_verify_json(dest, vdata)
+            if base_text:
+                (dest / "baseline.json").write_text(base_text, encoding="utf-8")
+            if after_text:
+                (dest / "after.json").write_text(after_text, encoding="utf-8")
+    return markdown
 
 
-def _save(results: dict, source: str, out_dir: Path | None) -> str:
-    """Write the run-record JSON + report.md sidecar; return Markdown."""
+def _save(
+    results: dict, source: str, out_dir: Path | None
+) -> tuple[str, str]:
+    """Write the run-record JSON + report.md sidecar.
+
+    Returns ``(markdown, stem)`` so analyze can co-locate per-component
+    ``<stem>.verify/`` artifacts. An uncited verdict claim
+    (report.ReportError) is recorded as a failure and the sidecar renders
+    degraded (verdict withheld) rather than silent prose — never a crash,
+    never an unwritten sidecar.
+    """
+    try:
+        markdown = report.render_markdown(results)
+    except report.ReportError as exc:
+        results["failures"].append(exc.failure)
+        markdown = report.render_markdown(results, enforce=False)
     saved = Path(out_dir) if out_dir else Path("database")
     saved.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
@@ -123,9 +505,8 @@ def _save(results: dict, source: str, out_dir: Path | None) -> str:
     (saved / f"{stem}.json").write_text(
         json.dumps(results, indent=2), encoding="utf-8"
     )
-    markdown = report.render_markdown(results)
     (saved / f"{stem}.report.md").write_text(markdown, encoding="utf-8")
-    return markdown
+    return markdown, stem
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -260,14 +641,32 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"{i}. {opt['name']} — {opt['why']}")
         elif args.command == "report":
             data = json.loads(Path(args.run_json).read_text(encoding="utf-8"))
-            print(report.render_markdown(data))
+            try:
+                print(report.render_markdown(data))
+            except report.ReportError as exc:
+                print(f"report failed: {format_one(exc.failure)}")
+                print(report.render_markdown(data, enforce=False))
+                return 1
         elif args.command == "implement":
-            plan = implement.plan(
-                {"component": args.component}, {"wheel": args.wheel}
-            )
-            print(implement.apply(plan, args.sandbox_dir))
+            try:
+                plan = implement.plan(
+                    {"component": args.component}, {"wheel": args.wheel}
+                )
+                receipt = implement.apply(plan, args.sandbox_dir)
+            except Exception as exc:
+                print(f"implement failed: {exc}")
+                return 1
+            print(json.dumps(receipt, indent=2))
+            return 0 if receipt.get("ok") else 1
         elif args.command == "verify":
-            print(verify.check(args.verify_json))
+            try:
+                result = verify.check(args.verify_json)
+            except (verify.VerifyError, FileNotFoundError, ValueError) as exc:
+                print(f"verify failed: {exc}")
+                return 1
+            print(result)
+            return 0 if result.startswith(("verify: better",
+                                           "verify: keep-yours")) else 1
         elif args.command == "refresh-cache":
             print(evidence.refresh_weekly_cache())
     except UnderstandError as exc:

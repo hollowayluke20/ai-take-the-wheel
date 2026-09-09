@@ -1,6 +1,14 @@
 # 10 — Build: rank stage
 
-Status: claimed
+Status: resolved
+
+## Answer
+
+Ranker real: 10·P0+3·P1+1·P2, log10-relative norms, log-damp downloads;
+CVE capped −4 never vetoes; license zero numeric effect, prose warning;
+keep/decline verdict with dissent on close margins; full breakdown output.
+Critic PASS; verifier `verified` (80 passed, live CLI exercise: CVE marked
+down still ranked, GPL warned unscored, keep path triggers).
 Type: task
 Blocked by: 09
 

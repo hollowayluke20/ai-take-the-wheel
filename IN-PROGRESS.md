@@ -1,12 +1,12 @@
-# IN-PROGRESS — attw-prototype loop (2026-09-09 overnight)
+# IN-PROGRESS — attw-prototype COMPLETE (2026-09-09)
 
-Map FULLY WORKED: all 6 tickets resolved (06 contract, 01 suite keys 26–35,
-02/03/04 specs, 05 architecture + code skeleton, verifier-verified).
-Next wave = BUILD (implement the 7 stages through the gauntlet against keys
-26–35). Paused for Luke's morning arch review before new build tickets are
-graduated — do not spin up build tickets until he confirms the skeleton.
-Still pending from Luke: GitHub PAT (evidence stage needs it), repo URL
-(push fails: no origin).
+Map + build wave ALL resolved (01–13). Prototype runs end-to-end (26/34/35
+PASS live); known limitation: sandbox test-group deps (e.g. freezegun).
+179 tests green, ruff clean. PAT stored in gitignored `.env`.
+Next: Alex's lane structure (supervisor + parallel lanes + integration via
+PRs). BLOCKED on repo URL — push fails (no origin), PRs impossible local.
+Pending Luke judgments: hard runs 32/33 (decline vs argue), skipped keys
+27–29/31/33, `database/` run-record git policy.
 
 ---
 # IN-PROGRESS — Daily Project Reviewer finish (2026-09-08)
