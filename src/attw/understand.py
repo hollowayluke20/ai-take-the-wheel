@@ -81,10 +81,88 @@ def decompose(source: str, *, timeout_s: int = 120) -> list[Component]:
 
 # ---------------------------------------------------------------------------
 # idea-text front end (05 D7 shape; deterministic until the LLM lands)
+#
+# Two-level splitter. Level 1 cuts explicit delimiters (conjunctions,
+# punctuation). Level 2 cuts capability boundaries: each delimiter-phrase
+# is scanned for distinct capability signals (verb+object families); a
+# phrase matching >=2 families emits one component per family, a phrase
+# matching exactly one emits one component for it, and a phrase matching
+# none stays a single fallback component. Confidence scales with
+# specificity: matched capabilities score high, concrete fallbacks sit
+# mid, vague blobs (no verb, generic-only wording) score low enough for
+# the quality floor to decline.
 # ---------------------------------------------------------------------------
 
 _IDEA_SPLIT = re.compile(
-    r"\s*(?:[;\n]+|\s+and\s+|\s+plus\s+|\s+with\s+)\s*", re.IGNORECASE
+    r"\s*(?:[;\n]+|\s+and\s+|\s+plus\s+|\s+with\s+|\s+then\s+"
+    r"|\s+as\s+well\s+as\s+|\s+along\s+with\s+)\s*"
+    r"|\s*,\s*",
+    re.IGNORECASE,
+)
+
+# (capability id, signal regex, component name, component description)
+_CAPABILITIES: tuple[tuple[str, str, str, str], ...] = (
+    (
+        "rewrite",
+        r"rewrit\w*|paraphras\w*|reword\w*|rephras\w*|humaniz\w*|humanis\w*",
+        "Rewrite/paraphrase text",
+        "Rewrite or paraphrase existing text into a different form.",
+    ),
+    (
+        "ai-signal",
+        r"\bai\b|ai[\s\-]?(?:generated|likelihood|detection|written)|"
+        r"detect\w*|watermark|gptzero",
+        "AI-generated text signal",
+        "Work with AI-generated text or AI-likelihood signals.",
+    ),
+    (
+        "human-style",
+        r"sound\s+\w+|human[\s\-]?(?:sounding|like\b)?|tone\b|style\b|natural\b",
+        "Human-sounding style",
+        "Make output read as natural, human-sounding prose.",
+    ),
+    (
+        "quality-score",
+        r"scor\w*|readab\w*|fluency|fluent|grammar|grade|rating|plagiarism",
+        "Score/readability feedback",
+        "Score or grade output quality (readability, fluency, grammar).",
+    ),
+    (
+        "surface",
+        r"\bcli\b|\bapi\b|command[\s\-]?line|endpoint|dashboard|"
+        r"web\s+(?:app|interface|ui)|rest\s+api",
+        "CLI/API surface",
+        "Expose the capability through a CLI, API, or app surface.",
+    ),
+)
+
+_COMPILED_CAPS: tuple[tuple[str, re.Pattern, str, str], ...] = tuple(
+    (cid, re.compile(rx, re.IGNORECASE), name, desc)
+    for cid, rx, name, desc in _CAPABILITIES
+)
+
+_VERBS = frozenset(
+    "parse parses parsing fetch fetches fetching render renders rendering "
+    "rewrite rewrites rewriting paraphrase paraphrases summarize summarizes "
+    "summarizing translate translates score scores scoring detect detects "
+    "detecting check checks checking analyze analyzes convert converts "
+    "generate generates classify classifies extract extracts upload uploads "
+    "download downloads send sends build builds create creates make makes "
+    "write writes sound sounds".split()
+)
+
+_OBJECT_NOUNS = frozenset(
+    "text texts essay essays paper papers content score scores readability "
+    "output outputs result results prose style tone grammar".split()
+)
+
+_GENERIC_WORDS = frozenset(
+    "a an the that which app application tool thing stuff system program "
+    "software website something anything everything does do with and".split()
+)
+
+_VAGUE_OBJECTS = frozenset(
+    "stuff thing things something anything everything".split()
 )
 
 
@@ -96,21 +174,71 @@ def _short_name(phrase: str, max_words: int = 7, max_chars: int = 60) -> str:
     return name[:1].upper() + name[1:] if name else "Untitled capability"
 
 
+def _matched_confidence(phrase: str) -> float:
+    """Specificity-scaled confidence for a capability-matched component."""
+    conf = 0.6
+    tokens = set(re.findall(r"[a-z]+", phrase.lower()))
+    if tokens & _OBJECT_NOUNS:
+        conf += 0.05
+    if len(phrase.split()) >= 6:
+        conf += 0.05
+    return round(min(conf, 0.75), 2)
+
+
+def _fallback_confidence(phrase: str) -> float:
+    """Vague blobs score low; concrete verb-led phrases sit mid."""
+    tokens = re.findall(r"[a-z]+", phrase.lower())
+    content = [t for t in tokens if t not in _GENERIC_WORDS]
+    if len(tokens) <= 2 or not content:
+        return 0.35
+    if not (set(tokens) & _VERBS):
+        return 0.35
+    if set(tokens) & _VAGUE_OBJECTS:
+        return 0.35
+    return 0.5
+
+
+def _components_for_phrase(phrase: str) -> list[Component]:
+    display = phrase[:1].upper() + phrase[1:] if phrase else phrase
+    hits = [
+        (m.start(), name, desc)
+        for _cid, rx, name, desc in _COMPILED_CAPS
+        for m in [rx.search(phrase)]
+        if m is not None
+    ]
+    if hits:
+        hits.sort(key=lambda h: h[0])  # deterministic: text order
+        conf = _matched_confidence(phrase)
+        return [
+            Component(
+                name=name,
+                description=f"{desc} (idea: {display!r}).",
+                kind="addition",  # doubt -> addition, never substitution (05 D7)
+                call_sites=[],
+                confidence=conf,
+            )
+            for _, name, desc in hits
+        ]
+    return [
+        Component(
+            name=_short_name(phrase),
+            description=display,
+            kind="addition",  # doubt -> addition, never substitution (05 D7)
+            call_sites=[],
+            confidence=_fallback_confidence(phrase),
+        )
+    ]
+
+
 def _decompose_idea(text: str) -> list[Component]:
     phrases = [p.strip(" .") for p in _IDEA_SPLIT.split(text)]
     phrases = [p for p in phrases if p]
     if not phrases:
         raise _fail(CODE_BAD_INPUT, "Empty input: nothing to decompose.")
-    return [
-        Component(
-            name=_short_name(phrase),
-            description=phrase[:1].upper() + phrase[1:] if phrase else phrase,
-            kind="addition",  # doubt -> addition, never substitution (05 D7)
-            call_sites=[],
-            confidence=0.5,
-        )
-        for phrase in phrases
-    ]
+    components: list[Component] = []
+    for phrase in phrases:
+        components.extend(_components_for_phrase(phrase))
+    return components
 
 
 # ---------------------------------------------------------------------------
