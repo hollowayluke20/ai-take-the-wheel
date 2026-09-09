@@ -15,5 +15,9 @@ venv/
 # attw weekly mention cache — refreshable, not committed (ticket 09).
 database/cache/
 
+# attw per-run records — proof trail lives in answer-keys + RUNLOG + map (C10).
+database/*
+!database/README.md
+
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 /graft/
