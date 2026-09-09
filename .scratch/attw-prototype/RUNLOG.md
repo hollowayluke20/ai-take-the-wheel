@@ -21,3 +21,7 @@ Exact format (see `.scratch/attw-prototype/LOOP.md` §7, normative):
 | 2026-09-09 | 11 | report stage (cited table+verdict, enforcement) | pass | critic pass; verifier verified, 98 tests | 0 |
 | 2026-09-09 | 12 | implement stage (full matrix, sandbox) | pass | 1 reject fixed (vendor); verifier verified, 126 tests | 1 |
 | 2026-09-09 | 13 | verify harness + end-to-end (26/34/35 pass) | pass | 3 retries; accepted with test-groups limitation | 3 |
+| 2026-09-09 | 14 | lane: test-group deps (key-30 baseline fixed) | pass | critic pass; verifier verified | 0 |
+| 2026-09-09 | 15 | lane: quality floor (decline-weak) | pass | critic pass; verifier verified; 1 fix (pinned tests) | 1 |
+| 2026-09-09 | 16 | lane: broader find (3 queries, merge/dedupe) | pass | critic pass; verifier verified | 0 |
+| 2026-09-09 | 17 | lane: smarter decompose (3-4 comps) | pass | critic pass; verifier verified | 0 |

@@ -1,12 +1,11 @@
-# IN-PROGRESS — attw-prototype COMPLETE (2026-09-09)
+# IN-PROGRESS — lanes wave 1 (2026-09-09)
 
-Map + build wave ALL resolved (01–13). Prototype runs end-to-end (26/34/35
-PASS live); known limitation: sandbox test-group deps (e.g. freezegun).
-179 tests green, ruff clean. PAT stored in gitignored `.env`.
-Next: Alex's lane structure (supervisor + parallel lanes + integration via
-PRs). BLOCKED on repo URL — push fails (no origin), PRs impossible local.
-Pending Luke judgments: hard runs 32/33 (decline vs argue), skipped keys
-27–29/31/33, `database/` run-record git policy.
+Remote wired + pushed (`hollowayluke20/ai-take-the-wheel`); merged remote
+model-config line. `database/` run records gitignored (C10).
+Alex structure live: LANES.md contract, 4 lanes built+checked (14 test-group
+deps, 15 quality floor, 16 broader find, 17 smarter decompose) — merging via
+PR trickle. Lane 18 (skipped keys 27–29/31/33) claimed, running.
+Pending Luke judgments: hard runs 32/33 (decline vs argue).
 
 ---
 # IN-PROGRESS — Daily Project Reviewer finish (2026-09-08)

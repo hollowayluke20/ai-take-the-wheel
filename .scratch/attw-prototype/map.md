@@ -122,6 +122,14 @@ print/commit it.
   harness real, pipeline wired end-to-end, live proof 26/34/35 PASS;
   accepted with known limitation (test-group deps, e.g. freezegun, not
   installed in sandbox — follow-up lane task). MAP COMPLETE.
+
+## Lanes wave 1 (Alex structure, all checker-passed, merging trickle)
+
+- [14 test-group deps](.scratch/attw-prototype/issues/14-lane-test-group-deps.md): PASS.
+- [15 quality floor](.scratch/attw-prototype/issues/15-lane-quality-floor.md): PASS.
+- [16 broader find](.scratch/attw-prototype/issues/16-lane-broader-find.md): PASS.
+- [17 smarter decompose](.scratch/attw-prototype/issues/17-lane-smarter-decompose.md): PASS.
+- [18 skipped keys](.scratch/attw-prototype/issues/18-lane-skipped-keys.md): claimed, running.
 - **Pre-build rulings (Luke, 2026-09-09)**: suite spread approved, wackier
   targets allowed at same 6/2/2 shape; PAT pending (Luke mints it;
   unauth/cached until then); CVE marks down never vetoes; license mismatch =
