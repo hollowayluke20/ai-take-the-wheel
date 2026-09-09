@@ -1,5 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
+  "model": "meta/muse-spark-1.3-contributor",
   "mcp": {
     "graft": {
       "type": "local",
