@@ -284,7 +284,8 @@ def test_failed_install_after_two_fallbacks(tmp_path, monkeypatch):
     assert not receipt["ok"]
     assert receipt["failure_string"] == "implement: failed-install"
     assert receipt["failure"]["code"] == "failed-install"
-    assert pip_calls == ["-e .", p["pin"], "fb1", "fb2"]  # target editable, then 2 fallbacks, then stop
+    assert pip_calls == ["-e .", p["pin"], "fb1", "fb2"]
+    # target editable, then 2 fallbacks, then stop
     assert "python-slugify" not in (sandbox / "pyproject.toml").read_text()
 
 
@@ -300,7 +301,8 @@ def test_api_mismatch_reverts_single_attempt(tmp_path, monkeypatch):
     receipt = implement.apply(p, str(sandbox))
     assert receipt["failure_string"] == "implement: api-mismatch"
     assert receipt["reverted"] is True
-    assert len(pip_calls) == 2  # target editable + one adapter attempt, no install retries
+    assert len(pip_calls) == 2
+    # target editable + one adapter attempt, no install retries
     assert (sandbox / "pyproject.toml").read_text() == before
     assert not (sandbox / "_attw_odd_adapter.py").exists()
 
@@ -561,3 +563,131 @@ def test_target_deps_plugin_failure_records_never_raises(tmp_path, monkeypatch):
     assert rec["installed"] == ["-e ."]
     assert len(rec["failures"]) == 1
     assert rec["failures"][0]["code"] == "failed-install"
+
+
+# --- TEST dependency-groups (ticket 14: key 30 needs freezegun) -----------
+
+
+def test_test_group_pins_dependency_groups_only_test(tmp_path):
+    sb = tmp_path / "sb"
+    sb.mkdir()
+    (sb / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+        "[dependency-groups]\n"
+        'test = ["pytest", "pytest-cov", "pytest-mock", "freezegun"]\n'
+        'dev = ["sphinx"]\n'
+        'docs = ["sphinx"]\n'
+        'lint = ["ruff"]\n',
+        encoding="utf-8",
+    )
+    pins = implement._test_group_pins(str(sb))
+    assert pins == ["pytest", "pytest-cov", "pytest-mock", "freezegun"]
+
+
+def test_test_group_pins_include_group_and_unknown_tables(tmp_path):
+    sb = tmp_path / "sb"
+    sb.mkdir()
+    (sb / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+        "[dependency-groups]\n"
+        'test = [{include-group = "shared"}, "freezegun", {other = 1}, 42]\n'
+        'shared = ["pytest-mock"]\n',
+        encoding="utf-8",
+    )
+    pins = implement._test_group_pins(str(sb))
+    assert pins == ["pytest-mock", "freezegun"]
+    # missing/unparseable files yield [], never raise
+    assert implement._test_group_pins(str(tmp_path / "missing")) == []
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    (bad / "pyproject.toml").write_text("not = [valid toml", encoding="utf-8")
+    assert implement._test_group_pins(str(bad)) == []
+
+
+def test_test_group_pins_setup_cfg_extras(tmp_path):
+    sb = tmp_path / "sb"
+    sb.mkdir()
+    (sb / "setup.cfg").write_text(
+        "[metadata]\nname = demo\n"
+        "[options.extras_require]\n"
+        "test =\n"
+        "    freezegun\n"
+        "    pytest-mock\n"
+        "docs =\n"
+        "    sphinx\n",
+        encoding="utf-8",
+    )
+    assert implement._test_group_pins(str(sb)) == ["freezegun", "pytest-mock"]
+
+
+def test_test_group_pins_setup_py_extras_parse_only(tmp_path):
+    sb = tmp_path / "sb"
+    sb.mkdir()
+    (sb / "setup.py").write_text(
+        "raise RuntimeError('executed!')\n"  # sentinel: parse-only, never run
+        "from setuptools import setup\n"
+        "setup(name='demo', extras_require="
+        "{'test': ['freezegun'], 'docs': ['sphinx']})\n",
+        encoding="utf-8",
+    )
+    assert implement._test_group_pins(str(sb)) == ["freezegun"]
+
+
+def test_test_group_pins_requirements_files(tmp_path):
+    sb = tmp_path / "sb"
+    sb.mkdir()
+    (sb / "requirements-test.txt").write_text("freezegun\n", encoding="utf-8")
+    (sb / "requirements-dev.txt").write_text("sphinx\n", encoding="utf-8")
+    (sb / "requirements").mkdir()
+    (sb / "requirements" / "test-extra.txt").write_text(
+        "pytest-mock\n", encoding="utf-8"
+    )
+    (sb / "requirements" / "prod.txt").write_text("requests\n", encoding="utf-8")
+    pins = implement._test_group_pins(str(sb))
+    assert "-r requirements-test.txt" in pins
+    assert "-r requirements/test-extra.txt" in pins
+    assert not any("dev" in p or "prod" in p for p in pins)
+
+
+def test_target_deps_installs_test_groups_cookiecutter_shape(tmp_path, monkeypatch):
+    sandbox = make_repo(tmp_path / "sb")
+    (sandbox / "pyproject.toml").write_text(
+        PYPROJECT
+        + "[dependency-groups]\n"
+        + 'test = ["pytest", "pytest-cov", "pytest-mock", "freezegun"]\n'
+        + '[tool.pytest.ini_options]\naddopts = "--cov=demo"\n',
+        encoding="utf-8",
+    )
+    pip_calls, _ = wire(monkeypatch, tmp_path)
+    receipt = implement.apply(dep_swap_plan(delete=[]), str(sandbox))
+    assert receipt["ok"]
+    # editable, then pytest-cov once (plugin + group deduped), then the rest
+    assert pip_calls[0] == "-e ."
+    assert pip_calls.count("pytest-cov") == 1
+    assert "freezegun" in pip_calls and "pytest-mock" in pip_calls
+    installed = receipt["target_deps"]["installed"]
+    assert "freezegun" in installed and "pytest-mock" in installed
+    assert receipt["target_deps"]["failures"] == []
+
+
+def test_target_deps_test_group_failure_records_never_raise(tmp_path, monkeypatch):
+    sandbox = make_repo(tmp_path / "sb")
+    (sandbox / "pyproject.toml").write_text(
+        PYPROJECT + "[dependency-groups]\ntest = [\"freezegun\"]\n",
+        encoding="utf-8",
+    )
+
+    def fake_pip(pin, sandbox_dir):
+        if pin == "freezegun":
+            raise RuntimeError("no wheel freezegun")
+        return "installed"
+
+    monkeypatch.setattr(implement, "_pip_install", fake_pip)
+    monkeypatch.setattr(implement, "_ensure_venv", lambda d: {"tool": "mock"})
+    rec = implement._install_target_deps(str(sandbox), "slug")
+    assert rec["installed"] == ["-e ."]
+    assert len(rec["failures"]) == 1
+    failure = rec["failures"][0]
+    assert failure["stage"] == "implement"
+    assert failure["code"] == "failed-install"
+    assert "freezegun" in failure["reason"]

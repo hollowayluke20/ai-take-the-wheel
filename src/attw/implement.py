@@ -658,13 +658,194 @@ def _pytest_plugin_pins(sandbox_dir: str | Path) -> list[str]:
     return resolved
 
 
+# ---------------------------------------------------------------------------
+# Test dependency-groups implied by the target's own test config.
+# ---------------------------------------------------------------------------
+
+
+#: Group/extras names treated as TEST deps. Only these are ever installed;
+#: `dev`/`docs`/`lint` groups are never pulled (modest allowlist: install
+#: what's declared for tests, no unbounded resolution).
+_TEST_GROUP_NAMES = ("test", "tests", "testing")
+
+
+def _dep_groups_from_pyproject(root: Path) -> list[str]:
+    """Collect TEST `[dependency-groups]` entries (PEP 735, strings only).
+
+    Starts from groups named in :data:`_TEST_GROUP_NAMES` and follows
+    ``{include-group = "..."}`` refs recursively (cycle-guarded); any other
+    table entries are skipped. Missing/unparseable files yield [].
+    Read-only; never executes target code.
+    """
+    pyproject = root / "pyproject.toml"
+    if not pyproject.is_file():
+        return []
+    try:
+        import tomllib  # Python 3.11+
+    except ImportError:  # pragma: no cover
+        return []
+    try:
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8", errors="replace"))
+    except Exception:
+        return []
+    groups = data.get("dependency-groups")
+    if not isinstance(groups, dict):
+        return []
+    pins: list[str] = []
+    visited: set[str] = set()
+
+    def _visit(name: str) -> None:
+        if name in visited:
+            return
+        visited.add(name)
+        entries = groups.get(name)
+        if not isinstance(entries, list):
+            return
+        for entry in entries:
+            if isinstance(entry, str):
+                if entry.strip() and entry.strip() not in pins:
+                    pins.append(entry.strip())
+            elif isinstance(entry, dict) and isinstance(
+                entry.get("include-group"), str
+            ):
+                _visit(entry["include-group"])
+
+    for name in _TEST_GROUP_NAMES:
+        if name in groups:
+            _visit(name)
+    return pins
+
+
+def _extras_from_setup_cfg(root: Path) -> list[str]:
+    """Collect TEST extras from ``setup.cfg`` (``[options.extras_require]``).
+
+    Keys matching :data:`_TEST_GROUP_NAMES` (case-insensitive); values split
+    on newlines/commas, comments/empties skipped, markers kept verbatim.
+    Missing/unparseable files yield [].
+    """
+    import configparser
+
+    path = root / "setup.cfg"
+    if not path.is_file():
+        return []
+    try:
+        parser = configparser.ConfigParser()
+        parser.read_string(path.read_text(encoding="utf-8", errors="replace"))
+    except Exception:
+        return []
+    section = "options.extras_require"
+    if not parser.has_section(section):
+        return []
+    pins: list[str] = []
+    for key in parser.options(section):
+        if key.strip().lower() not in _TEST_GROUP_NAMES:
+            continue
+        try:
+            raw = parser.get(section, key, raw=True)
+        except Exception:
+            continue
+        for chunk in raw.replace(",", "\n").split("\n"):
+            line = chunk.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line not in pins:
+                pins.append(line)
+    return pins
+
+
+def _extras_from_setup_py(root: Path) -> list[str]:
+    """Collect TEST extras from ``setup.py`` via AST (parse-only, never run).
+
+    Reads literal ``setup(... extras_require={"test": [...]})`` string
+    constants for keys in :data:`_TEST_GROUP_NAMES`; anything dynamic or
+    unparseable yields []. Never executes the file.
+    """
+    path = root / "setup.py"
+    if not path.is_file():
+        return []
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+    except Exception:
+        return []
+    pins: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        is_setup = (isinstance(func, ast.Name) and func.id == "setup") or (
+            isinstance(func, ast.Attribute) and func.attr == "setup"
+        )
+        if not is_setup:
+            continue
+        for kw in node.keywords:
+            if kw.arg != "extras_require" or not isinstance(kw.value, ast.Dict):
+                continue
+            for k, v in zip(kw.value.keys, kw.value.values):
+                if not (isinstance(k, ast.Constant) and isinstance(k.value, str)):
+                    continue
+                if k.value.strip().lower() not in _TEST_GROUP_NAMES:
+                    continue
+                if not isinstance(v, (ast.List, ast.Tuple)):
+                    continue
+                for elt in v.elts:
+                    if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                        entry = elt.value.strip()
+                        if entry and entry not in pins:
+                            pins.append(entry)
+    return pins
+
+
+def _test_requirements_files(root: Path) -> list[str]:
+    """Install-arg refs for TEST requirements files (``-r <rel>``).
+
+    Matches root ``requirements-test*.txt`` and ``requirements/test*.txt``
+    (also ``requirement/test*.txt`` singular). Missing dirs yield [].
+    Returned as ``-r`` args resolved with cwd=sandbox (same form as the
+    existing root-requirements handling in :func:`_install_target_deps`).
+    """
+    refs: list[str] = []
+    for path in sorted(root.glob("requirements-test*.txt")):
+        if path.is_file() and path.name not in refs:
+            refs.append(f"-r {path.name}")
+    for dirname in ("requirements", "requirement"):
+        sub = root / dirname
+        if not sub.is_dir():
+            continue
+        for path in sorted(sub.glob("test*.txt")):
+            if path.is_file():
+                refs.append(f"-r {path.relative_to(root).as_posix()}")
+    return refs
+
+
+def _test_group_pins(sandbox_dir: str | Path) -> list[str]:
+    """All declared TEST dep pins for the sandbox target (order-preserved).
+
+    Merges pyproject ``[dependency-groups]`` TEST entries, setup.cfg/setup.py
+    ``test`` extras, and TEST requirements-file refs. Deduped; install-arg
+    (``-r ...``) refs kept verbatim. Never raises on bad config.
+    """
+    root = Path(sandbox_dir)
+    pins: list[str] = []
+    for pin in (
+        _dep_groups_from_pyproject(root)
+        + _extras_from_setup_cfg(root)
+        + _extras_from_setup_py(root)
+        + _test_requirements_files(root)
+    ):
+        if pin not in pins:
+            pins.append(pin)
+    return pins
+
+
 def _install_target_deps(sandbox_dir: str, component: str = "") -> dict:
     """Install the target's own deps into the sandbox venv pre-baseline.
 
     Editable target (``-e .``) when a build manifest is present, plus
     every root ``requirements*.txt`` when present, plus pytest plugin
     deps implied by the target's pytest config (``_pytest_plugin_pins``,
-    allowlisted). Installs-only
+    allowlisted), plus the target's TEST dependency-groups
+    (``_test_group_pins``: pyproject ``[dependency-groups]`` TEST entries,
+    ``test`` extras, TEST requirements files). Installs-only
     network; each attempt is recorded and failures become exact
     ``implement/failed-install`` records — never a raise, so a
     half-installable target still yields a baseline capture downstream.
@@ -690,6 +871,14 @@ def _install_target_deps(sandbox_dir: str, component: str = "") -> dict:
     for pkg in _pytest_plugin_pins(root):
         if pkg not in pins:
             pins.append(pkg)
+    # TEST dependency-groups (e.g. freezegun from `[dependency-groups]
+    # test`): the suite must import the target's test helpers or the
+    # baseline misfires on collection errors. Only what's declared for
+    # tests is installed (never dev/docs/lint groups). Failures record
+    # as exact `implement/failed-install` rows, downstream-only.
+    for pin in _test_group_pins(root):
+        if pin not in pins:
+            pins.append(pin)
     for pin in pins:
         record["attempts"].append(pin)
         try:
