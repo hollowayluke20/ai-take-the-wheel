@@ -157,7 +157,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_e.add_argument("candidate", help="Candidate name or JSON file.")
 
     p_r = sub.add_parser("rank", help="Rank options for a problem.")
-    p_r.add_argument("problem", help="Problem string.")
+    p_r.add_argument(
+        "problem",
+        help="Problem string, or path to a candidates+cells JSON file "
+        "({'candidates': [...], 'incumbent': {...} or [...]}).",
+    )
 
     p_rep = sub.add_parser("report", help="Render a run-record JSON as Markdown.")
     p_rep.add_argument("run_json", help="Path to a database run-record JSON file.")
@@ -226,8 +230,34 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"evidence failed: {exc}")
                 return 1
         elif args.command == "rank":
-            for i, opt in enumerate(rank.rank(args.problem), start=1):
-                print(f"{i}. {opt['name']} — {opt['why']}")
+            maybe_path = Path(args.problem)
+            if maybe_path.is_file():
+                payload = json.loads(maybe_path.read_text(encoding="utf-8"))
+                if isinstance(payload, dict):
+                    candidates = payload.get("candidates", [])
+                    incumbent = payload.get("incumbent")
+                else:
+                    candidates, incumbent = payload, None
+                result = rank.rank_candidates(candidates, incumbent=incumbent)
+                for i, entry in enumerate(result["ranking"], start=1):
+                    print(
+                        f"{i}. {entry['name']} score={entry['score']} "
+                        f"(P0={entry['p0']} P1={entry['p1']} "
+                        f"P2={entry['p2']} penalty={entry['penalty']} "
+                        f"confidence={entry['confidence']})"
+                    )
+                    if entry["license_warning"]:
+                        print(f"   license: {entry['license_warning']}")
+                verdict = result["verdict"]
+                print(
+                    f"verdict: {verdict['decision']}"
+                    f" winner={verdict['winner']} margin={verdict['margin']}"
+                )
+                if verdict["dissent"]:
+                    print(f"dissent: {verdict['dissent']}")
+            else:
+                for i, opt in enumerate(rank.rank(args.problem), start=1):
+                    print(f"{i}. {opt['name']} — {opt['why']}")
         elif args.command == "report":
             data = json.loads(Path(args.run_json).read_text(encoding="utf-8"))
             print(report.render_markdown(data))
