@@ -192,8 +192,8 @@ def test_analyze_dry_run_record(tmp_path, monkeypatch, capsys):
 
 
 def test_analyze_full_records_skeleton_failures(tmp_path, monkeypatch):
-    # Ticket 13 wired the real chain: an idea-text full run records the
-    # implement skip (no target repo) and skips verify cleanly.
+    # Ticket 15: empty-cells winner declines-weak; decline skips
+    # implement/verify cleanly (no failures recorded).
     from attw import evidence, find
 
     monkeypatch.setattr(
@@ -215,7 +215,9 @@ def test_analyze_full_records_skeleton_failures(tmp_path, monkeypatch):
     saved = list((tmp_path / "database").glob("*.json"))
     record = json.loads(saved[0].read_text(encoding="utf-8"))
     stages = {f["stage"] for f in record["failures"]}
-    assert stages == {"implement"}
+    assert stages == set()
+    assert record["failures"] == []
+    assert record["problems"][0]["verdict"]["decision"] == "decline-weak"
 
 
 def test_report_renders_verdict_and_failures():

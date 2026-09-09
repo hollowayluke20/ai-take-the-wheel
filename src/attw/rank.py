@@ -38,6 +38,28 @@ CVE_CAP = 4.0
 # Margin below which the verdict records dissent naming the runner-up (05 D5).
 DISSENT_MARGIN = 1.0
 
+# Minimum-quality floor for additions with no incumbent (ticket 15; Luke tunes
+# later). The winner must score at/above MIN_QUALITY_SCORE AND show at/least
+# MIN_POSITIVE_SIGNALS strictly-positive scored norms, else decline-weak.
+MIN_QUALITY_SCORE = 2.0
+MIN_POSITIVE_SIGNALS = 2
+
+# The 11 scored norms behind the floor's positive-signal count (forks_n is
+# computed for the breakdown but is NOT scored, same as in P0).
+SCORED_NORMS = (
+    "stars_n",
+    "dl",
+    "fresh_n",
+    "release_n",
+    "issues_n",
+    "dep_n",
+    "so_n",
+    "hn_n",
+    "docs_n",
+    "dependents_n",
+    "awesome_n",
+)
+
 # The 5 repo-content heuristic flags behind docs_n. collect_evidence emits a
 # 6th flag (requires_python_bound) which duplicates the P0 requires_python
 # signal, so docs_n uses these 5 only.
@@ -145,6 +167,22 @@ def _mean(values: list[float | None]) -> tuple[float, int]:
     return sum(present) / len(present), len(present)
 
 
+def _positive_signals(norms: dict) -> int:
+    """Count scored norms that are present and strictly positive."""
+    return sum(
+        1
+        for key in SCORED_NORMS
+        if norms.get(key) is not None and norms[key] > 0
+    )
+
+
+def _below_floor(entry: dict) -> bool:
+    """True when the winner fails the ticket-15 addition floor."""
+    if entry["score"] < MIN_QUALITY_SCORE:
+        return True
+    return _positive_signals(entry["norms"]) < MIN_POSITIVE_SIGNALS
+
+
 def _cand_name(candidate: dict, index: int) -> str:
     for key in ("candidate", "name", "pypi_name"):
         value = candidate.get(key)
@@ -166,7 +204,10 @@ def rank_candidates(
     confidence/license_warning``) for the report to render. ``verdict`` is
     ``recommend`` (winner = rank #1) unless an ``incumbent`` evidence dict
     scores at/above the best challenger, in which case it is ``keep`` with
-    ``winner`` None (keep-yours decline). Ties break by name ascending.
+    ``winner`` None (keep-yours decline). With no incumbent, a winner below
+    the ticket-15 quality floor yields ``decline-weak`` (nothing to keep,
+    nothing good enough to add), ``winner`` None. The incumbent path never
+    applies the floor. Ties break by name ascending.
     """
     moment = now or datetime.now(timezone.utc)
     if moment.tzinfo is None:
@@ -285,6 +326,19 @@ def rank_candidates(
             "margin": round(best - incumbent_score, 4),
             "dissent": None,
             "reason": "incumbent scores at/above the best challenger; decline",
+        }
+    elif incumbent is None and _below_floor(entries[0]):
+        n_pos = _positive_signals(entries[0]["norms"])
+        verdict = {
+            "decision": "decline-weak",
+            "winner": None,
+            "margin": margin,
+            "dissent": None,
+            "reason": (
+                f"best {entries[0]['name']} below addition floor "
+                f"(score {entries[0]['score']:.4f}, {n_pos} positive "
+                "signals); decline-weak per ticket 15"
+            ),
         }
     else:
         verdict = {
