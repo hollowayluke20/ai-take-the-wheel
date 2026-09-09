@@ -1,4 +1,4 @@
-"""Find-stage tests (ticket 08). All HTTP is mocked — no live network here.
+"""Find-stage tests (tickets 08/16). All HTTP is mocked — no live network here.
 
 A session guard fails any test that touches the real urlopen; per-test
 monkeypatches replace it with fakes.
@@ -70,6 +70,48 @@ def test_component_to_query_fallback_is_deterministic():
     assert first.endswith("language:python")
 
 
+# --- query expansion: up to 3 deterministic queries per component ---
+
+def test_component_to_queries_curated_shape():
+    component = _component("HTTP fetching with hand-rolled urllib helpers",
+                           "Downloading remote resources with urllib.")
+    queries = find.component_to_queries(component)
+    assert queries == ["http client language:python",
+                       "python requests httpx http-client language:python",
+                       "topic:http language:python"]
+    assert queries[0] == find.component_to_query(component)
+    assert queries == find.component_to_queries(component)  # deterministic
+
+
+def test_component_to_queries_capped_at_three():
+    component = _component("Blorping zenthic widgets",
+                           "Blorping zenthic widgets with quantum sprockets")
+    queries = find.component_to_queries(component)
+    assert 1 <= len(queries) <= find.MAX_QUERIES_PER_COMPONENT
+    assert queries[0] == find.component_to_query(component)
+    assert len(set(queries)) == len(queries)  # deduped
+
+
+def test_component_to_queries_bare_fallback_stays_single():
+    component = _component("!!", "??")
+    assert find.component_to_query(component) == "language:python"
+    assert find.component_to_queries(component) == ["language:python"]
+
+
+def test_humanizer_component_maps_to_paraphrase():
+    # "latest" contains the "test" substring — the humanizer rule must
+    # still win (it precedes the test rule in _QUERY_RULES).
+    component = _component(
+        "AI text humanizer",
+        "Rewrite latest AI-generated text to sound human-written with "
+        "varied style and tone to bypass AI detection.")
+    assert find.component_to_query(component) == "paraphrase language:python"
+    queries = find.component_to_queries(component)
+    assert queries == ["paraphrase language:python",
+                       "python text augmentation paraphrasing language:python",
+                       "topic:nlp language:python"]
+
+
 # --- .env token loading: parsed directly, never printed ---
 
 def test_load_github_token_parses_dotenv(tmp_path, monkeypatch, capsys):
@@ -119,34 +161,77 @@ def test_load_github_token_env_wins(monkeypatch):
 
 # --- find_for_component: one query, success / empty / rate-limit ---
 
-def test_find_for_component_success_single_query(monkeypatch):
+def test_find_for_component_multi_query_merge_and_order(monkeypatch):
     calls = []
 
     def _fake(query, limit=10):
         calls.append((query, limit))
-        return [_item("psf/requests", 50000), _item("encode/httpx", 9000)]
+        if query == "http client language:python":
+            return [_item("psf/requests", 50000), _item("shared/lib", 50)]
+        if query == "python requests httpx http-client language:python":
+            return [_item("encode/httpx", 9000), _item("shared/lib", 7000)]
+        return []
 
     monkeypatch.setattr(github_search, "search_repos", _fake)
     component = _component("HTTP fetching with hand-rolled urllib helpers",
                            "Downloading remote resources with urllib.")
-    got = find.find_for_component(component)
-    assert len(calls) == 1  # ONE query per component, never per candidate
-    assert calls[0][0] == "http client language:python"
-    assert [c["full_name"] for c in got] == ["psf/requests", "encode/httpx"]
-    assert got[0]["url"] == "https://github.com/psf/requests"
-    assert got[0]["stars"] == 50000
-    assert got[0]["query"] == "http client language:python"
+    got = find.find_for_component(component, delay_s=0)
+    expected_queries = find.component_to_queries(component)
+    assert len(expected_queries) == 3
+    # Component-level queries only, never per candidate (<=3, exact set)
+    assert [q for q, _ in calls] == expected_queries
+    assert [c["full_name"] for c in got] == ["psf/requests", "encode/httpx",
+                                            "shared/lib"]
+    assert [c["stars"] for c in got] == [50000, 9000, 7000]  # stars-ordered
+    by_name = {c["full_name"]: c for c in got}
+    assert by_name["shared/lib"]["stars"] == 7000  # dedupe keeps max stars
+    assert by_name["psf/requests"]["query"] == "http client language:python"
+    assert all(c["query"] in expected_queries for c in got)  # recorded
+
+
+def test_find_for_component_dedupes_across_queries(monkeypatch):
+    def _fake(query, limit=10):
+        return [_item("psf/requests", 50000)]
+
+    monkeypatch.setattr(github_search, "search_repos", _fake)
+    component = _component("HTTP fetching", "http fetching")
+    got = find.find_for_component(component, delay_s=0)
+    assert [c["full_name"] for c in got] == ["psf/requests"]  # one row
+
+
+def test_find_for_component_quota_mid_sequence(monkeypatch):
+    calls = []
+
+    def _fake(query, limit=10):
+        calls.append(query)
+        if len(calls) == 1:
+            return [_item("psf/requests", 50000)]
+        raise github_search.RateLimitError("limited", retry_after_s=42.0)
+
+    monkeypatch.setattr(github_search, "search_repos", _fake)
+    with pytest.raises(FindError) as exc:
+        find.find_for_component(_component("HTTP fetching", "http stuff"),
+                                delay_s=0)
+    failure = exc.value.failure
+    assert (failure["stage"], failure["code"]) == ("find", "quota_hit")
+    assert "queries=" in failure["detail"]  # queries tried so far recorded
+    assert calls[0] in failure["detail"]
+    assert "42" in failure["detail"]
 
 
 def test_find_for_component_empty_raises_no_candidates(monkeypatch):
     monkeypatch.setattr(github_search, "search_repos", lambda q, limit=10: [])
+    component = _component("Blorping zenthic widgets",
+                           "Blorping zenthic widgets")
     with pytest.raises(FindError) as exc:
-        find.find_for_component(_component("Blorping zenthic widgets",
-                                           "Blorping zenthic widgets"))
+        find.find_for_component(component, delay_s=0)
     failure = exc.value.failure
     assert failure["stage"] == "find"
     assert failure["code"] == "no-candidates"
-    assert "query=" in failure["detail"]  # records the query tried
+    # empty from ALL queries -> every query tried is recorded
+    assert "queries=" in failure["detail"]
+    for query in find.component_to_queries(component):
+        assert query in failure["detail"]
 
 
 def test_find_for_component_rate_limit_maps_to_quota_hit(monkeypatch):
@@ -155,7 +240,8 @@ def test_find_for_component_rate_limit_maps_to_quota_hit(monkeypatch):
 
     monkeypatch.setattr(github_search, "search_repos", _limited)
     with pytest.raises(FindError) as exc:
-        find.find_for_component(_component("HTTP fetching", "http stuff"))
+        find.find_for_component(_component("HTTP fetching", "http stuff"),
+                                delay_s=0)
     failure = exc.value.failure
     assert (failure["stage"], failure["code"]) == ("find", "quota_hit")
     assert "42" in failure["detail"]
@@ -167,7 +253,8 @@ def test_find_for_component_network_error_maps_to_source_down(monkeypatch):
 
     monkeypatch.setattr(github_search, "search_repos", _down)
     with pytest.raises(FindError) as exc:
-        find.find_for_component(_component("HTTP fetching", "http stuff"))
+        find.find_for_component(_component("HTTP fetching", "http stuff"),
+                                delay_s=0)
     assert exc.value.failure["code"] == "source_down"
 
 
@@ -180,8 +267,10 @@ def test_find_for_components_sleeps_between_queries(monkeypatch):
     found, failures = find.find_for_components(components, delay_s=2.0)
     assert failures == []
     assert sorted(found) == ["C0", "C1", "C2"]
-    assert all(len(v) == 1 for v in found.values())
-    assert sleeps == [2.0, 2.0]  # between queries only, never before first
+    assert all(len(v) == 1 for v in found.values())  # deduped across queries
+    # 3 queries per component: 2 within-component sleeps x3, plus 2
+    # between-component sleeps; never before the first query.
+    assert sleeps == [2.0] * 8
 
 
 def test_find_for_components_partial_failure_keeps_going(monkeypatch):

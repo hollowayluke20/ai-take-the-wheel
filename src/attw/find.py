@@ -1,10 +1,12 @@
 """Find stage: per Component, find candidate wheels via GitHub search.
 
-Contract (tickets 02/05/08 + map bar):
+Contract (tickets 02/05/08 + map bar, broadened by ticket 16):
 
-- ONE search-API query per component, never per candidate (02 ban:
-  search is for *finding*). Candidates are ranked by relevance =
-  GitHub stars order (the search API's ``sort=stars``).
+- Up to THREE search-API queries per component, never per candidate (02
+  ban: search is for *finding*). [0] is the deterministic mapping below,
+  [1] a synonym/expansion variant, [2] a topic-based query. Candidates
+  from all queries are merged, deduped by repo, and ranked by relevance
+  = GitHub stars order (the search API's ``sort=stars``).
 - Authenticated via GITHUB_TOKEN loaded from `.env`
   (github_search.load_github_token parses the file directly; the token
   is never printed, logged, or committed). Queries are spaced
@@ -16,10 +18,15 @@ Contract (tickets 02/05/08 + map bar):
   significant tokens (lowercased alphanumerics, stopwords and
   <3-char tokens dropped, order preserved, deduped) joined with
   ``" language:python"``.
-- No fabricated candidates: an empty result raises FindError carrying
-  the exact failure record ``find/no-candidates`` (detail holds the
-  query tried). Rate-limiting raises FindError ``find/quota_hit``;
-  other network failures raise FindError ``find/source_down``.
+- Every candidate records the query that found it (``Candidate.query``);
+  the full query list per component is recoverable from its candidates
+  and is recorded verbatim in failure details, so the run record shows
+  all queries issued per component.
+- No fabricated candidates: empty results from ALL queries raise
+  FindError carrying the exact failure record ``find/no-candidates``
+  (detail holds every query tried). Rate-limiting raises FindError
+  ``find/quota_hit``; other network failures raise FindError
+  ``find/source_down``.
 """
 
 from __future__ import annotations
@@ -79,6 +86,13 @@ _QUERY_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
      "configuration management language:python"),
     (("isinstance", "validat", "pydantic", "schema", "attrs"),
      "data validation language:python"),
+    # Ticket 16: AI-humaniser components must reach mainstream
+    # paraphrase/style libraries. Placed BEFORE the test rule: words
+    # like "latest" contain the "test" substring and would otherwise
+    # steal these components.
+    (("humaniz", "humanis", "paraphras", "ai-generated", "ai detection",
+       "style transfer", "bypass detector"),
+     "paraphrase language:python"),
     (("test", "pytest", "suite"), "testing framework language:python"),
     (("dataframe", "pandas"), "dataframe language:python"),
     (("log", "logging"), "logging language:python"),
@@ -124,6 +138,87 @@ def component_to_query(component: dict) -> str:
     return " ".join(tokens) + " language:python"
 
 
+# Ticket 16: synonym/expansion variant per curated base query ([1]).
+_EXPANSIONS: dict[str, str] = {
+    "http client language:python":
+        "python requests httpx http-client language:python",
+    "cli framework language:python":
+        "python cli argparse click typer language:python",
+    "csv parser language:python":
+        "python csv delimited parsing language:python",
+    "retry backoff language:python":
+        "python retry backoff tenacity language:python",
+    "configuration management language:python":
+        "python configuration dotenv settings language:python",
+    "data validation language:python":
+        "python validation pydantic schema language:python",
+    "paraphrase language:python":
+        "python text augmentation paraphrasing language:python",
+    "testing framework language:python":
+        "python testing pytest framework language:python",
+    "dataframe language:python":
+        "python dataframe pandas polars language:python",
+    "logging language:python":
+        "python logging loguru structlog language:python",
+    "progress bar language:python":
+        "python progress bar tqdm rich language:python",
+}
+
+# Ticket 16: topic-based query per curated base query ([2]).
+_TOPICS: dict[str, str] = {
+    "http client language:python": "topic:http language:python",
+    "cli framework language:python": "topic:cli language:python",
+    "csv parser language:python": "topic:csv language:python",
+    "retry backoff language:python": "topic:retry language:python",
+    "configuration management language:python":
+        "topic:configuration language:python",
+    "data validation language:python": "topic:validation language:python",
+    "paraphrase language:python": "topic:nlp language:python",
+    "testing framework language:python": "topic:testing language:python",
+    "dataframe language:python": "topic:dataframe language:python",
+    "logging language:python": "topic:logging language:python",
+    "progress bar language:python": "topic:cli language:python",
+}
+
+#: Hard cap on search-API queries per component (ticket 16).
+MAX_QUERIES_PER_COMPONENT = 3
+
+
+def _core_tokens(query: str) -> list[str]:
+    return [t for t in query.replace(" language:python", "").split()
+            if t != "language:python"]
+
+
+def component_to_queries(component: dict) -> list[str]:
+    """Map a Component to up to 3 deterministic GitHub search queries.
+
+    [0] is ``component_to_query`` (curated rule or fallback), [1] the
+    synonym/expansion variant, [2] the topic-based query. Duplicates
+    are dropped, order preserved, capped at MAX_QUERIES_PER_COMPONENT.
+    Unmapped fallbacks broaden generically (first-3-tokens variant +
+    first-token topic); a bare ``language:python`` base stays 1 query.
+    """
+    base = component_to_query(component)
+    queries = [base]
+    expansion = _EXPANSIONS.get(base)
+    if expansion is None:
+        core = _core_tokens(base)
+        if len(core) > 3:
+            expansion = " ".join(core[:3]) + " language:python"
+        elif len(core) > 1:
+            expansion = core[0] + " language:python"
+    if expansion and expansion not in queries:
+        queries.append(expansion)
+    topic = _TOPICS.get(base)
+    if topic is None:
+        core = _core_tokens(base)
+        if core:
+            topic = f"topic:{core[0]} language:python"
+    if topic and topic not in queries:
+        queries.append(topic)
+    return queries[:MAX_QUERIES_PER_COMPONENT]
+
+
 def _to_candidate(item: dict, query: str) -> Candidate:
     full_name = item.get("full_name") or ""
     return Candidate(
@@ -136,34 +231,61 @@ def _to_candidate(item: dict, query: str) -> Candidate:
     )
 
 
-def find_for_component(component: dict, *, limit: int = 10) -> list[Candidate]:
-    """Run ONE GitHub search query for a Component; return its candidates.
+def _stars_key(candidate: Candidate) -> tuple[bool, int]:
+    stars = candidate.get("stars")
+    return (isinstance(stars, int), stars if isinstance(stars, int) else 0)
 
-    Raises FindError (empty -> no-candidates; rate-limited -> quota_hit;
-    other network failures -> source_down).
+
+def find_for_component(
+    component: dict, *, limit: int = 10,
+    delay_s: float = github_search.POLITENESS_DELAY_S,
+) -> list[Candidate]:
+    """Run up to 3 GitHub search queries for a Component; return candidates.
+
+    Per-query calls stay component-level (never per candidate). Results
+    merge across queries, dedupe by repo (``full_name``, highest stars
+    win), and order stars-descending (``None`` stars last). Each
+    candidate's ``query`` field records the query that found it, so the
+    run record shows every query issued per component.
+
+    Raises FindError (empty from ALL queries -> no-candidates, detail
+    lists every query tried; rate-limited incl. mid-sequence ->
+    quota_hit; other network failures -> source_down).
     """
     name = component.get("name", "")
-    query = component_to_query(component)
-    try:
-        items = github_search.search_repos(query, limit=limit)
-    except github_search.RateLimitError as exc:
-        detail = f"query={query!r}"
-        if exc.retry_after_s is not None:
-            detail += f" retry_after_s={exc.retry_after_s:.0f}"
-        raise _fail(CODE_QUOTA,
-                    f"GitHub search rate-limited for component {name!r}.",
-                    component=name, detail=detail) from exc
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
-            OSError, json.JSONDecodeError) as exc:
-        raise _fail(CODE_DOWN,
-                    f"GitHub search failed for component {name!r}: "
-                    f"{type(exc).__name__}.",
-                    component=name, detail=f"query={query!r}") from exc
-    if not items:
+    queries = component_to_queries(component)
+    merged: dict[str, Candidate] = {}
+    for qi, query in enumerate(queries):
+        if qi > 0 and delay_s > 0:
+            sleep(delay_s)  # same 30 req/min authed search bucket
+        try:
+            items = github_search.search_repos(query, limit=limit)
+        except github_search.RateLimitError as exc:
+            detail = f"queries={queries[:qi + 1]!r}"
+            if exc.retry_after_s is not None:
+                detail += f" retry_after_s={exc.retry_after_s:.0f}"
+            raise _fail(CODE_QUOTA,
+                        f"GitHub search rate-limited for component {name!r}.",
+                        component=name, detail=detail) from exc
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
+                OSError, json.JSONDecodeError) as exc:
+            raise _fail(CODE_DOWN,
+                        f"GitHub search failed for component {name!r}: "
+                        f"{type(exc).__name__}.",
+                        component=name,
+                        detail=f"queries={queries[:qi + 1]!r}") from exc
+        for item in items:
+            candidate = _to_candidate(item, query)
+            key = (candidate["full_name"] or candidate["url"]
+                   or candidate["name"] or query)
+            prev = merged.get(key)
+            if prev is None or _stars_key(candidate) > _stars_key(prev):
+                merged[key] = candidate
+    if not merged:
         raise _fail(CODE_NO_CANDIDATES,
                     f"No candidates found for component {name!r}.",
-                    component=name, detail=f"query={query!r}")
-    return [_to_candidate(item, query) for item in items]
+                    component=name, detail=f"queries={queries!r}")
+    return sorted(merged.values(), key=_stars_key, reverse=True)
 
 
 def find_for_components(
@@ -172,7 +294,7 @@ def find_for_components(
     limit: int = 10,
     delay_s: float = github_search.POLITENESS_DELAY_S,
 ) -> tuple[dict[str, list[Candidate]], list[dict]]:
-    """Find candidates per Component (ONE query each, spaced delay_s apart).
+    """Find candidates per Component (up to 3 queries each, delay_s apart).
 
     Returns (candidates_by_component_name, failures). A failed component
     records its failure and yields no candidates; other components
@@ -185,7 +307,7 @@ def find_for_components(
             sleep(delay_s)  # 30 req/min authed search bucket
         try:
             found[component.get("name", "")] = find_for_component(
-                component, limit=limit)
+                component, limit=limit, delay_s=delay_s)
         except FindError as exc:
             found[component.get("name", "")] = []
             failures.append(exc.failure)
@@ -193,7 +315,7 @@ def find_for_components(
 
 
 def search(problem: str, *, limit: int = 10) -> list[Candidate]:
-    """Compat entry: one query for a free-text problem string (unknown kind).
+    """Compat entry: up to 3 queries for a free-text problem string.
 
     Raises FindError on the same paths as find_for_component.
     """
