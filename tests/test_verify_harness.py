@@ -458,3 +458,28 @@ def test_fingerprint_shape(tmp_path):
                 "platform", "target_git_sha"):
         assert key in fp
     assert sys.version.split()[0] in fp["python_version"]
+
+
+# --- boundary (ticket 14): test-group install is implement-owned -----------
+#
+# The harness owns the pytest invocation only; it never installs the
+# target's TEST dependency-groups (implement._install_target_deps does that
+# pre-baseline). A sandbox carrying [dependency-groups] test files must not
+# change the harness capture command.
+
+
+def test_run_suite_ignores_test_group_files(tmp_path, monkeypatch):
+    entries = [("test_x.py::t1", "passed")]
+    calls = _wire_fake_run(monkeypatch, tmp_path, entries)
+    sandbox = tmp_path / "sandbox-tg"
+    sandbox.mkdir()
+    (sandbox / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+        "[dependency-groups]\ntest = [\"freezegun\"]\n",
+        encoding="utf-8",
+    )
+    path = verify.run_suite(sandbox, "pytest -q tests", label="baseline")
+    assert path.name == "baseline.json"
+    cmd = calls[0]
+    assert "freezegun" not in cmd  # harness installs nothing target-declared
+    assert cmd[1:3] == ["-m", "pytest"]
