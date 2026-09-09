@@ -204,3 +204,35 @@ def test_analyze_records_understand_failure_downstream_only(
     assert [f["stage"] for f in record["failures"]] == ["understand"]
     assert record["components"] == [] and record["problems"] == []
     assert "understand" in capsys.readouterr().out.lower()
+
+
+DEMO_IDEA = "an app that rewrites AI-generated text to sound human"
+
+
+def test_demo_idea_yields_multiple_components():
+    # Ticket 17: the demo lesson-2 blob must split on capability bounds.
+    components = understand.decompose(DEMO_IDEA)
+    assert len(components) >= 2
+    assert {c["kind"] for c in components} == {"addition"}
+    assert len({c["name"] for c in components}) == len(components)
+    assert all(0.0 <= c["confidence"] <= 1.0 for c in components)
+
+
+def test_single_capability_stays_single():
+    components = understand.decompose("an app that summarizes PDFs")
+    assert len(components) == 1
+    assert components[0]["kind"] == "addition"
+
+
+def test_multi_capability_no_delimiter_splits():
+    components = understand.decompose(
+        "rewrites AI-generated text to sound human, scores readability"
+    )
+    assert len(components) >= 2
+    assert {c["kind"] for c in components} == {"addition"}
+
+
+def test_vague_blob_gets_low_confidence():
+    (components,) = understand.decompose("an app that does stuff")
+    assert components["kind"] == "addition"
+    assert components["confidence"] < 0.5
