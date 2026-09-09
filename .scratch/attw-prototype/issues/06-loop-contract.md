@@ -1,6 +1,15 @@
 # 06 — Loop contract: gauntlet mechanics on this tracker
 
-Status: open
+Status: resolved
+
+## Answer
+
+Loop contract written as `.scratch/attw-prototype/LOOP.md` (standalone,
+10 sections); `testdata/known_answers/SCHEMA.md` extended with per-run
+answer-key fields (input, expected_wheels, run_type, better_spec, verify);
+RUNLOG created with header. Gate verified: `python -m pytest -q` 10 passed,
+`python -m ruff check .` clean. Blind critic: PASS (2 wording nits fixed).
+Bar home = known_answers (one bar); RUNLOG home = `.scratch/attw-prototype/`.
 Type: task
 
 ## Question

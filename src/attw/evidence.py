@@ -3,7 +3,8 @@
 No AI, no paid APIs. Three fetchers, all stdlib-only (urllib):
 
 - github_repo(url): stars, forks, last_commit_date, open_issues,
-  closed_issues, license, primary_language via the public GitHub REST API.
+  license, primary_language via one GET /repos call (02 Proposal L114;
+  per-candidate search-API calls BANNED, closed_issues DROPPED per L126).
 - pypi_package(name): latest_version, latest_release_date, recent download
   counts via PyPI JSON + the pypistats API.
 - npm_package(name): latest_version, last_publish_date, weekly downloads
@@ -20,6 +21,27 @@ import urllib.request
 
 _TIMEOUT = 15
 _USER_AGENT = "attw/0.0.1 (evidence fetcher)"
+
+
+def collect_evidence(candidate: dict) -> dict:
+    """Per-candidate fetch-plan entry point (02 Proposal L134-152).
+
+    Exact sequence (search-API calls BANNED): GET /repos, PyPI JSON,
+    pypistats recent, deps.dev GetVersion, GetDependencies (P1, skip on
+    429), git-tree heuristics, plus local weekly-cache reads. Skeleton.
+    """
+    _ = candidate
+    raise NotImplementedError("collect_evidence not implemented (ticket 05)")
+
+
+def refresh_weekly_cache(week_id: str | None = None) -> str:
+    """Weekly SO/HN/awesome refresh job (02 Proposal L154-170). Skeleton.
+
+    Reads live endpoints once per ISO week into
+    database/cache/mentions_<week_id>.json. NO live network in ticket 05.
+    """
+    _ = week_id
+    raise NotImplementedError("refresh_weekly_cache not implemented (ticket 05)")
 
 
 def _get_json(url: str, headers: dict | None = None) -> dict:
@@ -42,8 +64,10 @@ def _github_headers() -> dict:
 def github_repo(url: str) -> dict:
     """Fetch vital signs for a GitHub repo URL.
 
-    closed_issues comes from the search API (heavily rate-limited without a
-    token); it is None when that call fails.
+    Single GET /repos call only (02 Proposal L138, L149). closed_issues is
+    DROPPED per 02 Proposal L126 — the per-candidate GET /search/issues call
+    is DELETED (separate 10/min bucket); no null+reason cell is emitted for
+    it because the signal itself was dropped, not degraded.
     """
     path = urllib.parse.urlparse(url).path.strip("/").removesuffix(".git")
     parts = path.split("/")
@@ -56,23 +80,11 @@ def github_repo(url: str) -> dict:
     )
     lic = data.get("license") or {}
 
-    closed_issues: int | None = None
-    try:
-        q = urllib.parse.quote(f"repo:{owner}/{repo} type:issue state:closed")
-        search = _get_json(
-            f"https://api.github.com/search/issues?q={q}&per_page=1",
-            _github_headers(),
-        )
-        closed_issues = search.get("total_count")
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
-        closed_issues = None
-
     return {
         "stars": data.get("stargazers_count"),
         "forks": data.get("forks_count"),
         "last_commit_date": data.get("pushed_at"),
         "open_issues": data.get("open_issues_count"),
-        "closed_issues": closed_issues,
         "license": lic.get("spdx_id") or lic.get("name"),
         "primary_language": data.get("language"),
     }

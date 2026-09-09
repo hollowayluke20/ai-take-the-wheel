@@ -53,7 +53,8 @@ Luke judges the reports sensible.
 - **Sandbox**: throwaway copy of the target under temp. Original never touched.
   Network allowed for installs. Never pushes anywhere.
 - Checker mechanics: gauntlet-loop skill (`.agents/skills/gauntlet-loop/SKILL.md`),
-  reconciled with this tracker's paths in ticket 06.
+  reconciled with this tracker's paths in ticket 06; the resulting contract is
+  [Loop contract](.scratch/attw-prototype/LOOP.md).
 
 ## Decisions so far
 
@@ -74,6 +75,32 @@ Luke judges the reports sensible.
 - **Downstream-only failure** (Q23).
 - **No time-boxes, stall-detection instead** (Q24).
 - **Permissionless overnight** (Q22 side-note).
+- [Loop contract](.scratch/attw-prototype/issues/06-loop-contract.md): one bar
+  (known_answers extended), RUNLOG under `.scratch/attw-prototype/`, blind
+  critic + verifier per piece, 3 retries then NEEDS-LUKE flag.
+- [10-run suite](.scratch/attw-prototype/issues/01-run-suite.md): keys 26–35
+  hardened with green baselines; validator enforces the extended schema;
+  critic PASS.
+- [Evidence signals](.scratch/attw-prototype/issues/02-evidence-signals.md):
+  v1 spec decided (PAT-mandatory, P0/P1/P2, weekly cache, CVE/license rules,
+  null+reason failures); resolved with one overruled critic round.
+- [Implement strategy](.scratch/attw-prototype/issues/03-implement-strategy.md):
+  matrix + per-cell defaults, outright deletion in sandbox, adapter rules
+  without LOC cap, sandbox protocol, exact failure strings; critic PASS.
+- [Verify harness](.scratch/attw-prototype/issues/04-verify-harness.md):
+  harness-owned capture, 4-bucket diff + verify.json, ordered critic gate,
+  benchmark + stall protocols, night budget; critic PASS.
+- [Pipeline architecture](.scratch/attw-prototype/issues/05-architecture.md):
+  layout + CLI + run-record + report + failure schema decided and skeleted in
+  code; 1 critic reject fixed; verifier `verified`. Map fully worked.
+- **Pre-build rulings (Luke, 2026-09-09)**: suite spread approved, wackier
+  targets allowed at same 6/2/2 shape; PAT pending (Luke mints it;
+  unauth/cached until then); CVE marks down never vetoes; license mismatch =
+  prose warning; mention/review sentiment cached weekly; 2 wheel fallbacks;
+  deletion allowed outright in sandbox; GPL = dep-swap-or-skip; verify harness
+  owns baseline capture; NO adapter LOC cap (critic judges per case); verify
+  keys extend known_answers; pytest-json-report allowed; clearly-faster-here
+  benchmark bar; single 20-min stall default; remote deferred, loop runs local.
 
 ## Not yet specified
 

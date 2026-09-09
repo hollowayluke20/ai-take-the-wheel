@@ -56,4 +56,21 @@ def render_markdown(results: dict) -> str:
                 f" | {_evidence_cell(opt.get('evidence', {}))} | {source} |"
             )
         lines += [""]
+
+    # Verdict: prose winner argument; every claim cites an evidence cell
+    # (map bar). Omitted when None (skeleton runs have no verdict yet).
+    verdict = results.get("verdict")
+    if verdict:
+        lines += ["## Verdict", "", str(verdict), ""]
+
+    failures = results.get("failures", [])
+    if failures:
+        lines += ["## Failures", ""]
+        lines += ["| Stage | Code | Reason |", "| --- | --- | --- |"]
+        for failure in failures:
+            lines.append(
+                f"| {failure.get('stage', '-')} | {failure.get('code', '-')}"
+                f" | {failure.get('reason', '-')} |"
+            )
+        lines += [""]
     return "\n".join(lines).rstrip() + "\n"

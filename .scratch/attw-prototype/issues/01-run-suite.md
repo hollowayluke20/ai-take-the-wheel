@@ -1,6 +1,17 @@
 # 01 — Finalise the 10-run suite
 
-Status: open
+Status: resolved
+
+## Answer
+
+10-run suite hardened: `testdata/known_answers/26-*.json`–`35-*.json`
+(6 win on real repos with green baselines recorded, 2 hard with dissent
+recorded, 2 keep-yours). Validator extended for the new schema (incl.
+new_capability empty-tests carve-out); `validate_answers.py` exits 0 over
+all 35 files; repo gate green. Blind critic: PASS. Baselines: temp-venv
+pytest runs recorded per file; 2 Windows-only failures documented as
+unrelated. Swaps from proposal documented in notes. PAT still pending —
+evidence runs use unauth/cached until Luke pastes it.
 Type: task
 
 ## Question
@@ -54,4 +65,9 @@ Keep-yours (the ranker must prove it is not a yes-machine):
 - [ ] Answer-key recorded per run (extend `testdata/known_answers/` format — see ticket 06)
 - [ ] Luke has vetoed/trimmed the spread at morning review
 
-Needs Luke's morning verify before downstream build tickets treat keys as final.
+## Rulings (Luke, 2026-09-09, pre-build review)
+
+- Spread APPROVED. Luke notes runs could be wackier (GitHub skills/plugins
+  repos etc.) — hardener may swap in wilder equivalents, same 6/2/2 shape.
+- Remote deferred: loop runs local tonight, push later. No token yet either —
+  Luke will mint a GitHub PAT; until then evidence work uses unauth/cached mode.
