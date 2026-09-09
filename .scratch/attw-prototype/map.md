@@ -130,6 +130,19 @@ print/commit it.
 - [16 broader find](.scratch/attw-prototype/issues/16-lane-broader-find.md): PASS.
 - [17 smarter decompose](.scratch/attw-prototype/issues/17-lane-smarter-decompose.md): PASS.
 - [18 skipped keys](.scratch/attw-prototype/issues/18-lane-skipped-keys.md): claimed, running.
+
+## Dogfood follow-ups (filed 2026-09-09, QUEUED, unclaimed)
+
+Dry-runs on ai-portfolio, daily-brief, `psf/requests` (run records
+`database/2026-09-09-181613-*-ai-portf`,
+`database/2026-09-09-182529-*-daily-br`,
+`database/2026-09-09-183316-*-requests-git`): pipeline reliable 3/3,
+judgment unreliable (2 sane winners of 15). Each maps to one ticket:
+
+- [19 find library-ness gate](.scratch/attw-prototype/issues/19-find-libraryness-gate.md): non-libraries (apps, data dumps) ineligible for #1.
+- [20 rank fitness term](.scratch/attw-prototype/issues/20-rank-fitness-term.md): fitness-to-component score + freshness cap (same-day releases can't win).
+- [21 keep-yours calibration](.scratch/attw-prototype/issues/21-keep-yours-calibration.md): incumbent baseline row, `evidence-degraded` decline; Blocked by: 20 (shared `rank.py` claim).
+- [22 understand specificity](.scratch/attw-prototype/issues/22-understand-specificity.md): positive-evidence rule + incumbent recognition; requests ≤2 components.
 - **Pre-build rulings (Luke, 2026-09-09)**: suite spread approved, wackier
   targets allowed at same 6/2/2 shape; PAT pending (Luke mints it;
   unauth/cached until then); CVE marks down never vetoes; license mismatch =
